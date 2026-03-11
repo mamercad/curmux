@@ -6,7 +6,6 @@ Single file. No external dependencies beyond Python 3, tmux, and cursor.
 """
 
 import argparse
-import contextlib
 import hashlib
 import http.server
 import json
@@ -19,7 +18,6 @@ import sqlite3
 import ssl
 import subprocess
 import sys
-import textwrap
 import threading
 import time
 import uuid
@@ -103,69 +101,51 @@ def init_db():
 
 # ── Tmux helpers ─────────────────────────────────────────────────────────
 
+
 def tmux_session_name(name):
     return f"{TMUX_PREFIX}{name}"
 
 
 def tmux_has_session(name):
-    r = subprocess.run(
-        ["tmux", "has-session", "-t", tmux_session_name(name)],
-        capture_output=True
-    )
+    r = subprocess.run(["tmux", "has-session", "-t", tmux_session_name(name)], capture_output=True)
     return r.returncode == 0
 
 
 def tmux_new_session(name, cmd, cwd):
     shell_cmd = " ".join(shlex.quote(c) for c in cmd)
-    subprocess.run([
-        "tmux", "new-session", "-d",
-        "-s", tmux_session_name(name),
-        "-c", str(cwd),
-        shell_cmd
-    ], check=True)
+    subprocess.run(["tmux", "new-session", "-d", "-s", tmux_session_name(name), "-c", str(cwd), shell_cmd], check=True)
 
 
 def tmux_kill_session(name):
-    subprocess.run(
-        ["tmux", "kill-session", "-t", tmux_session_name(name)],
-        capture_output=True
-    )
+    subprocess.run(["tmux", "kill-session", "-t", tmux_session_name(name)], capture_output=True)
 
 
 def tmux_send_keys(name, text):
-    subprocess.run([
-        "tmux", "send-keys", "-t", tmux_session_name(name),
-        text, "Enter"
-    ], capture_output=True)
+    subprocess.run(["tmux", "send-keys", "-t", tmux_session_name(name), text, "Enter"], capture_output=True)
 
 
 def tmux_capture(name, lines=500):
-    r = subprocess.run([
-        "tmux", "capture-pane", "-t", tmux_session_name(name),
-        "-p", "-S", f"-{lines}"
-    ], capture_output=True, text=True)
+    r = subprocess.run(
+        ["tmux", "capture-pane", "-t", tmux_session_name(name), "-p", "-S", f"-{lines}"], capture_output=True, text=True
+    )
     return r.stdout if r.returncode == 0 else ""
 
 
 def tmux_list():
-    r = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name}"],
-        capture_output=True, text=True
-    )
+    r = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
     if r.returncode != 0:
         return []
-    return [s.replace(TMUX_PREFIX, "", 1)
-            for s in r.stdout.strip().splitlines()
-            if s.startswith(TMUX_PREFIX)]
+    return [s.replace(TMUX_PREFIX, "", 1) for s in r.stdout.strip().splitlines() if s.startswith(TMUX_PREFIX)]
 
 
 # ── Status detection ─────────────────────────────────────────────────────
+
 
 def _detect_status(clean_output):
     """Parse cursor agent TUI output to detect session state."""
     if not clean_output or not clean_output.strip():
         return "unknown"
-    lines = [l.strip() for l in clean_output.splitlines() if l.strip()]
+    lines = [ln.strip() for ln in clean_output.splitlines() if ln.strip()]
     if not lines:
         return "unknown"
     tail = "\n".join(lines[-20:]).lower()
@@ -194,15 +174,16 @@ def _detect_status(clean_output):
 def _at_shell_prompt(clean_output):
     if not clean_output:
         return False
-    lines = [l for l in clean_output.splitlines() if l.strip()]
-    for l in lines[-5:]:
-        ls = l.strip()
-        if re.search(r'[$%#]\s*$', ls) and "\u276f" not in ls:
+    lines = [ln for ln in clean_output.splitlines() if ln.strip()]
+    for ln in lines[-5:]:
+        ls = ln.strip()
+        if re.search(r"[$%#]\s*$", ls) and "\u276f" not in ls:
             return True
     return False
 
 
 # ── Session management ───────────────────────────────────────────────────
+
 
 def resolve_name(partial):
     """Resolve prefix match against registered sessions."""
@@ -229,15 +210,16 @@ def cmd_register(args):
         print(f"Directory does not exist: {directory}", file=sys.stderr)
         sys.exit(1)
     db.execute(
-        "INSERT OR REPLACE INTO sessions (name, directory, yolo, model, worktree) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (args.name, directory, int(args.yolo), args.model or "", int(args.worktree))
+        "INSERT OR REPLACE INTO sessions (name, directory, yolo, model, worktree) VALUES (?, ?, ?, ?, ?)",
+        (args.name, directory, int(args.yolo), args.model or "", int(args.worktree)),
     )
     db.commit()
-    print(f"Registered '{args.name}' → {directory}"
-          + (" [yolo]" if args.yolo else "")
-          + (f" [model={args.model}]" if args.model else "")
-          + (" [worktree]" if args.worktree else ""))
+    print(
+        f"Registered '{args.name}' → {directory}"
+        + (" [yolo]" if args.yolo else "")
+        + (f" [model={args.model}]" if args.model else "")
+        + (" [worktree]" if args.worktree else "")
+    )
 
 
 def cmd_start(args):
@@ -316,7 +298,7 @@ def cmd_ls(args):
         out = []
         for r in rows:
             status = "running" if r["name"] in running else "stopped"
-            out.append({k: r[k] for k in r.keys()} | {"status": status})
+            out.append({k: r[k] for k in r} | {"status": status})
         print(json.dumps(out, indent=2))
     else:
         for r in rows:
@@ -340,9 +322,8 @@ def cmd_exec(args):
         print(f"Directory does not exist: {directory}", file=sys.stderr)
         sys.exit(1)
     db.execute(
-        "INSERT OR REPLACE INTO sessions (name, directory, yolo, model, worktree) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (args.name, directory, int(args.yolo), args.model or "", int(args.worktree))
+        "INSERT OR REPLACE INTO sessions (name, directory, yolo, model, worktree) VALUES (?, ?, ?, ?, ?)",
+        (args.name, directory, int(args.yolo), args.model or "", int(args.worktree)),
     )
     db.commit()
 
@@ -371,6 +352,7 @@ def cmd_exec(args):
 
 # ── Task board ───────────────────────────────────────────────────────────
 
+
 def cmd_board(args):
     db = get_db()
     action = args.action if hasattr(args, "action") else "list"
@@ -379,16 +361,15 @@ def cmd_board(args):
         task_id = f"{args.project or 'TASK'}-{_short_id()}"
         db.execute(
             "INSERT INTO tasks (id, project, title, description) VALUES (?, ?, ?, ?)",
-            (task_id, args.project or "", args.title, args.description or "")
+            (task_id, args.project or "", args.title, args.description or ""),
         )
         db.commit()
         print(f"Created {task_id}: {args.title}")
 
     elif action == "claim":
         row = db.execute(
-            "UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=? "
-            "WHERE id=? AND status='todo' RETURNING *",
-            (args.agent, time.time(), args.task_id)
+            "UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=? WHERE id=? AND status='todo' RETURNING *",
+            (args.agent, time.time(), args.task_id),
         ).fetchone()
         db.commit()
         if row:
@@ -397,17 +378,12 @@ def cmd_board(args):
             print(f"Cannot claim {args.task_id} (not in 'todo' status)", file=sys.stderr)
 
     elif action == "done":
-        db.execute(
-            "UPDATE tasks SET status='done', completed_at=? WHERE id=?",
-            (time.time(), args.task_id)
-        )
+        db.execute("UPDATE tasks SET status='done', completed_at=? WHERE id=?", (time.time(), args.task_id))
         db.commit()
         print(f"Completed {args.task_id}")
 
     else:
-        rows = db.execute(
-            "SELECT * FROM tasks ORDER BY created_at"
-        ).fetchall()
+        rows = db.execute("SELECT * FROM tasks ORDER BY created_at").fetchall()
         if not rows:
             print("Board is empty. Use: curmux board add --title 'Task description'")
             return
@@ -430,13 +406,11 @@ def _short_id():
 
 # ── Alerts ───────────────────────────────────────────────────────────────
 
+
 def _push_alert(alert_type, session, message):
     try:
         db = get_db()
-        db.execute(
-            "INSERT INTO alerts (type, session, message) VALUES (?, ?, ?)",
-            (alert_type, session, message)
-        )
+        db.execute("INSERT INTO alerts (type, session, message) VALUES (?, ?, ?)", (alert_type, session, message))
         db.commit()
     except Exception:
         pass
@@ -480,11 +454,9 @@ def watchdog_tick():
                 actions["restarting"] = True
                 actions["last_restart"] = now
 
-                def _do_restart(sname=name, sdir=row["directory"],
-                                smodel=row["model"], syolo=row["yolo"]):
+                def _do_restart(sname=name, sdir=row["directory"], smodel=row["model"], syolo=row["yolo"]):
                     time.sleep(3)
-                    cmd_parts = ["cursor-agent", "--continue",
-                                 "--workspace", sdir]
+                    cmd_parts = ["cursor-agent", "--continue", "--workspace", sdir]
                     if syolo:
                         cmd_parts.append("--yolo")
                     if smodel:
@@ -493,8 +465,7 @@ def watchdog_tick():
                     _session_actions.get(sname, {}).pop("restarting", None)
 
                 threading.Thread(target=_do_restart, daemon=True).start()
-                _push_alert("auto_restart", name,
-                            f"Agent exited in '{name}' — auto-restarting with --continue")
+                _push_alert("auto_restart", name, f"Agent exited in '{name}' — auto-restarting with --continue")
 
         # 2. Waiting for confirmation in yolo mode → auto-accept
         if status == "waiting" and row["yolo"]:
@@ -503,15 +474,13 @@ def watchdog_tick():
             if now - wait_since > 30 and now - last_auto > 60:
                 actions["last_auto_accept"] = now
                 tmux_send_keys(name, "y")
-                _push_alert("auto_accept", name,
-                            f"Auto-accepted confirmation in '{name}'")
+                _push_alert("auto_accept", name, f"Auto-accepted confirmation in '{name}'")
 
         # 3. Stuck detection — no status change for extended period
         changed_at = actions.get("status_changed_at", now)
         if status == "idle" and now - changed_at > 600 and not actions.get("stuck_alerted"):
             actions["stuck_alerted"] = True
-            _push_alert("stuck", name,
-                        f"Session '{name}' appears stuck (idle >10min)")
+            _push_alert("stuck", name, f"Session '{name}' appears stuck (idle >10min)")
 
         if status != "idle":
             actions.pop("stuck_alerted", None)
@@ -527,6 +496,7 @@ def watchdog_loop(stop_event):
 
 
 # ── REST API + Web Dashboard ────────────────────────────────────────────
+
 
 class APIHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
@@ -645,11 +615,13 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             is_running = name in running
             status_info = _session_actions.get(name, {})
             detected = status_info.get("last_status", "stopped") if is_running else "stopped"
-            out.append({
-                **{k: r[k] for k in r.keys()},
-                "running": is_running,
-                "detected_status": detected,
-            })
+            out.append(
+                {
+                    **{k: r[k] for k in r},
+                    "running": is_running,
+                    "detected_status": detected,
+                }
+            )
         self._json(out)
 
     def _get_peek(self, name, lines):
@@ -669,10 +641,8 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         if not name:
             return self._json({"error": "name required"}, 400)
         db.execute(
-            "INSERT OR REPLACE INTO sessions (name, directory, yolo, model, worktree) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (name, directory, int(body.get("yolo", False)),
-             body.get("model", ""), int(body.get("worktree", False)))
+            "INSERT OR REPLACE INTO sessions (name, directory, yolo, model, worktree) VALUES (?, ?, ?, ?, ?)",
+            (name, directory, int(body.get("yolo", False)), body.get("model", ""), int(body.get("worktree", False))),
         )
         db.commit()
         self._json({"ok": True, "name": name})
@@ -680,6 +650,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
     def _post_start(self, name):
         class NS:
             pass
+
         ns = NS()
         ns.name = name
         try:
@@ -691,6 +662,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
     def _post_stop(self, name):
         class NS:
             pass
+
         ns = NS()
         ns.name = name
         try:
@@ -727,15 +699,14 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             params.append(status)
         q += " ORDER BY created_at"
         rows = db.execute(q, params).fetchall()
-        self._json([{k: r[k] for k in r.keys()} for r in rows])
+        self._json([{k: r[k] for k in r} for r in rows])
 
     def _post_task(self, body):
         db = get_db()
         task_id = f"{body.get('project', 'TASK')}-{_short_id()}"
         db.execute(
             "INSERT INTO tasks (id, project, title, description) VALUES (?, ?, ?, ?)",
-            (task_id, body.get("project", ""), body.get("title", ""),
-             body.get("description", ""))
+            (task_id, body.get("project", ""), body.get("title", ""), body.get("description", "")),
         )
         db.commit()
         self._json({"ok": True, "id": task_id})
@@ -744,9 +715,8 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         db = get_db()
         agent = body.get("agent", "")
         row = db.execute(
-            "UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=? "
-            "WHERE id=? AND status='todo' RETURNING *",
-            (agent, time.time(), task_id)
+            "UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=? WHERE id=? AND status='todo' RETURNING *",
+            (agent, time.time(), task_id),
         ).fetchone()
         db.commit()
         if row:
@@ -756,10 +726,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
 
     def _post_done(self, task_id):
         db = get_db()
-        db.execute(
-            "UPDATE tasks SET status='done', completed_at=? WHERE id=?",
-            (time.time(), task_id)
-        )
+        db.execute("UPDATE tasks SET status='done', completed_at=? WHERE id=?", (time.time(), task_id))
         db.commit()
         self._json({"ok": True, "id": task_id})
 
@@ -775,16 +742,16 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         db = get_db()
         if key:
             row = db.execute("SELECT * FROM memory WHERE key=?", (key,)).fetchone()
-            self._json({k: row[k] for k in row.keys()} if row else {})
+            self._json({k: row[k] for k in row} if row else {})
         else:
             rows = db.execute("SELECT * FROM memory ORDER BY key").fetchall()
-            self._json([{k: r[k] for k in r.keys()} for r in rows])
+            self._json([{k: r[k] for k in r} for r in rows])
 
     def _post_memory(self, body):
         db = get_db()
         db.execute(
             "INSERT OR REPLACE INTO memory (key, value, updated_at) VALUES (?, ?, ?)",
-            (body["key"], body["value"], time.time())
+            (body["key"], body["value"], time.time()),
         )
         db.commit()
         self._json({"ok": True})
@@ -794,19 +761,16 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
     def _get_messages(self, recipient=None):
         db = get_db()
         if recipient:
-            rows = db.execute(
-                "SELECT * FROM messages WHERE recipient=? ORDER BY created_at",
-                (recipient,)
-            ).fetchall()
+            rows = db.execute("SELECT * FROM messages WHERE recipient=? ORDER BY created_at", (recipient,)).fetchall()
         else:
             rows = db.execute("SELECT * FROM messages ORDER BY created_at DESC LIMIT 100").fetchall()
-        self._json([{k: r[k] for k in r.keys()} for r in rows])
+        self._json([{k: r[k] for k in r} for r in rows])
 
     def _post_message(self, body):
         db = get_db()
         db.execute(
             "INSERT INTO messages (sender, recipient, body) VALUES (?, ?, ?)",
-            (body.get("sender", ""), body.get("recipient", ""), body.get("body", ""))
+            (body.get("sender", ""), body.get("recipient", ""), body.get("body", "")),
         )
         db.commit()
         self._json({"ok": True})
@@ -815,13 +779,12 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
 
     def _get_alerts(self, limit=50):
         db = get_db()
-        rows = db.execute(
-            "SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
-        self._json([{k: r[k] for k in r.keys()} for r in rows])
+        rows = db.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        self._json([{k: r[k] for k in r} for r in rows])
 
 
 # ── TLS ──────────────────────────────────────────────────────────────────
+
 
 def ensure_tls():
     CERT_DIR.mkdir(parents=True, exist_ok=True)
@@ -832,26 +795,38 @@ def ensure_tls():
 
     if shutil.which("mkcert"):
         subprocess.run(
-            ["mkcert", "-cert-file", str(cert), "-key-file", str(key),
-             "localhost", "127.0.0.1"],
-            capture_output=True
+            ["mkcert", "-cert-file", str(cert), "-key-file", str(key), "localhost", "127.0.0.1"], capture_output=True
         )
         if cert.exists():
             return str(cert), str(key)
 
     # Self-signed fallback
-    subprocess.run([
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
-        "-keyout", str(key), "-out", str(cert),
-        "-days", "365", "-nodes",
-        "-subj", "/CN=localhost"
-    ], capture_output=True)
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-days",
+            "365",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+        ],
+        capture_output=True,
+    )
     return str(cert), str(key)
 
 
 # ── Dashboard HTML ───────────────────────────────────────────────────────
 
-DASHBOARD_HTML = """<!DOCTYPE html>
+DASHBOARD_HTML = (
+    """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1225,7 +1200,9 @@ main { padding: 24px; overflow-y: auto; }
   <header>
     <div style="display:flex;align-items:baseline;">
       <span class="logo">curmux</span>
-      <span class="version">v""" + VERSION + """</span>
+      <span class="version">v"""
+    + VERSION
+    + """</span>
     </div>
     <div class="tabs">
       <button class="tab active" onclick="showTab('sessions')">Sessions</button>
@@ -1435,9 +1412,11 @@ setInterval(refresh, 5000);
 </script>
 </body>
 </html>"""
+)
 
 
 # ── Serve command ────────────────────────────────────────────────────────
+
 
 def cmd_serve(args):
     port = args.port or DEFAULT_PORT
@@ -1469,17 +1448,17 @@ def cmd_serve(args):
     print(f"  Dashboard: {proto}://localhost:{port}")
     print(f"  API:       {proto}://localhost:{port}/api/sessions")
     print(f"  Watchdog:  active (every {WATCHDOG_INTERVAL}s)")
-    print(f"\n  Press Ctrl+C to stop.\n")
+    print("\n  Press Ctrl+C to stop.\n")
 
     server.serve_forever()
 
 
 # ── CLI parser ───────────────────────────────────────────────────────────
 
+
 def build_parser():
     p = argparse.ArgumentParser(
-        prog="curmux",
-        description="Cursor Agent Multiplexer — run parallel cursor agent sessions"
+        prog="curmux", description="Cursor Agent Multiplexer — run parallel cursor agent sessions"
     )
     p.add_argument("-v", "--version", action="version", version=f"curmux {VERSION}")
     sub = p.add_subparsers(dest="command")
@@ -1556,15 +1535,15 @@ def main():
 
     dispatch = {
         "register": cmd_register,
-        "start":    cmd_start,
-        "stop":     cmd_stop,
-        "attach":   cmd_attach,
-        "peek":     cmd_peek,
-        "send":     cmd_send,
-        "exec":     cmd_exec,
-        "ls":       cmd_ls,
-        "board":    cmd_board,
-        "serve":    cmd_serve,
+        "start": cmd_start,
+        "stop": cmd_stop,
+        "attach": cmd_attach,
+        "peek": cmd_peek,
+        "send": cmd_send,
+        "exec": cmd_exec,
+        "ls": cmd_ls,
+        "board": cmd_board,
+        "serve": cmd_serve,
     }
 
     if not args.command:
