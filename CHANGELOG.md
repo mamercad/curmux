@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-11
+
+### Fixed
+
+- Ruff SIM118: use `key in dict` instead of `key in dict.keys()` in row serialization
+
 ## [0.2.0] - 2026-03-10
 
 ### Added
@@ -41,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use `cursor-agent` binary instead of `cursor agent` (opens IDE instead of TUI)
 - Pass tmux commands as single shell string via `shlex.quote`
 
-[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/mamercad/curmux/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mamercad/curmux/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mamercad/curmux/releases/tag/v0.1.0
