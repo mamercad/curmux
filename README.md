@@ -45,6 +45,45 @@ Full terminal output with a send bar — monitor and direct agents without attac
 
 ---
 
+## Example: Parallel Feature Development
+
+Spin up two agents — one for the API, one for the frontend — with a shared task board so they don't step on each other.
+
+```bash
+# Register agents pointed at the same repo, isolated by worktree
+curmux register api      --dir ~/myapp --yolo --model sonnet-4
+curmux register frontend --dir ~/myapp --yolo --model sonnet-4 --worktree
+
+# Seed the task board
+curmux board add --title "Build POST /auth/login endpoint"   --project API
+curmux board add --title "Build POST /auth/register endpoint" --project API
+curmux board add --title "Create login page component"       --project UI
+curmux board add --title "Create signup page component"      --project UI
+
+# Launch both agents
+curmux start api
+curmux start frontend
+
+# Open the dashboard to watch them work
+curmux serve
+```
+
+From the dashboard (or CLI), each agent claims tasks atomically — no duplicated work. Peek into either session live, send follow-up prompts, and let the watchdog handle crashes.
+
+```bash
+# Check on progress
+curmux peek api
+curmux peek frontend
+
+# Send a directive to the api agent
+curmux send api "use bcrypt for password hashing, not argon2"
+
+# See what's been claimed
+curmux board list
+```
+
+---
+
 ## Features
 
 - **Parallel agents** — register and run many `cursor-agent` sessions, each in tmux
