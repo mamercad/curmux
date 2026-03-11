@@ -117,6 +117,13 @@ def init_db():
             message     TEXT NOT NULL,
             created_at  REAL DEFAULT (unixepoch())
         );
+        CREATE TABLE IF NOT EXISTS stream (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at  REAL DEFAULT (unixepoch()),
+            caller      TEXT DEFAULT '',
+            method      TEXT NOT NULL,
+            path        TEXT NOT NULL
+        );
     """)
     db.commit()
 
@@ -133,9 +140,13 @@ def tmux_has_session(name):
     return r.returncode == 0
 
 
-def tmux_new_session(name, cmd, cwd):
+def tmux_new_session(name, cmd, cwd, api_url=None):
+    api_url = api_url or f"http://localhost:{DEFAULT_PORT}"
+    context_val = f"You're in curmux. API base: {api_url}. Your session: {name}. Full API reference: GET {api_url}/api/docs. Agents doc: GET {api_url}/api/agents"
+    env_prefix = f"env CURMUX_SESSION={shlex.quote(name)} CURMUX_API_URL={shlex.quote(api_url)} CURMUX_CONTEXT={shlex.quote(context_val)}"
     shell_cmd = " ".join(shlex.quote(c) for c in cmd)
-    subprocess.run(["tmux", "new-session", "-d", "-s", tmux_session_name(name), "-c", str(cwd), shell_cmd], check=True)
+    full_cmd = f"{env_prefix} {shell_cmd}"
+    subprocess.run(["tmux", "new-session", "-d", "-s", tmux_session_name(name), "-c", str(cwd), full_cmd], check=True)
 
 
 def tmux_kill_session(name):
@@ -271,6 +282,8 @@ def cmd_start(args):
     tmux_new_session(name, cmd_parts, row["directory"])
     db.execute("UPDATE sessions SET started_at=? WHERE name=?", (time.time(), name))
     db.commit()
+    if getattr(args, "seed", False):
+        tmux_send_keys(name, "Read CURMUX_CONTEXT from the environment for curmux coordination.")
     _push_alert("start", name, f"Session '{name}' started")
     print(f"Started '{name}' in {row['directory']}")
 
@@ -430,6 +443,8 @@ def cmd_exec(args):
     tmux_new_session(args.name, cmd_parts, directory)
     db.execute("UPDATE sessions SET started_at=? WHERE name=?", (time.time(), args.name))
     db.commit()
+    if getattr(args, "seed", False):
+        tmux_send_keys(args.name, "Read CURMUX_CONTEXT from the environment for curmux coordination.")
     print(f"Exec '{args.name}' → {directory}: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
 
 
@@ -496,6 +511,15 @@ def _push_alert(alert_type, session, message):
     try:
         db = get_db()
         db.execute("INSERT INTO alerts (type, session, message) VALUES (?, ?, ?)", (alert_type, session, message))
+        db.commit()
+    except Exception:
+        pass
+
+
+def _push_stream(method, path, caller=""):
+    try:
+        db = get_db()
+        db.execute("INSERT INTO stream (method, path, caller) VALUES (?, ?, ?)", (method, path, caller or ""))
         db.commit()
     except Exception:
         pass
@@ -604,6 +628,15 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _text(self, body, status=200, content_type="text/plain; charset=utf-8"):
+        data = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", len(data))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length)) if length else {}
@@ -627,22 +660,41 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         if path == "" or path == "/":
             return self._html(DASHBOARD_HTML)
 
+        caller = (self.headers.get("X-Curmux-Session") or "").strip()
+
+        if path == "/api/docs":
+            _push_stream("GET", path, caller)
+            return self._get_docs()
+        if path == "/api/agents":
+            _push_stream("GET", path, caller)
+            return self._get_agents()
+        if path == "/api/stream":
+            _push_stream("GET", path, caller)
+            limit = int(qs.get("limit", 50))
+            return self._get_stream(limit)
         if path == "/api/sessions":
+            _push_stream("GET", path, caller)
             return self._get_sessions()
         if path.startswith("/api/sessions/") and path.endswith("/peek"):
+            _push_stream("GET", path, caller)
             name = path.split("/")[3]
             lines = int(qs.get("lines", 200))
             return self._get_peek(name, lines)
         if path.startswith("/api/sessions/") and path.endswith("/status"):
+            _push_stream("GET", path, caller)
             name = path.split("/")[3]
             return self._get_session_status(name)
         if path == "/api/tasks":
+            _push_stream("GET", path, caller)
             return self._get_tasks(qs.get("project"), qs.get("status"))
         if path == "/api/memory":
+            _push_stream("GET", path, caller)
             return self._get_memory(qs.get("key"))
         if path == "/api/messages":
+            _push_stream("GET", path, caller)
             return self._get_messages(qs.get("recipient"))
         if path == "/api/alerts":
+            _push_stream("GET", path, caller)
             limit = int(qs.get("limit", 50))
             return self._get_alerts(limit)
 
@@ -651,39 +703,56 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
         body = self._read_body()
+        caller = (
+            (body.get("agent") or body.get("sender") or self.headers.get("X-Curmux-Session") or "").strip()
+            if isinstance(body, dict)
+            else (self.headers.get("X-Curmux-Session") or "").strip()
+        )
 
         if path == "/api/sessions":
+            _push_stream("POST", path, caller)
             return self._post_session(body)
         if path.startswith("/api/sessions/") and path.endswith("/start"):
+            _push_stream("POST", path, caller)
             name = path.split("/")[3]
             return self._post_start(name)
         if path.startswith("/api/sessions/") and path.endswith("/stop"):
+            _push_stream("POST", path, caller)
             name = path.split("/")[3]
             return self._post_stop(name)
         if path.startswith("/api/sessions/") and path.endswith("/send"):
+            _push_stream("POST", path, caller)
             name = path.split("/")[3]
             return self._post_send(name, body)
         if path == "/api/tasks":
+            _push_stream("POST", path, caller)
             return self._post_task(body)
         if path.startswith("/api/tasks/") and path.endswith("/claim"):
+            _push_stream("POST", path, caller)
             task_id = path.split("/")[3]
             return self._post_claim(task_id, body)
         if path.startswith("/api/tasks/") and path.endswith("/done"):
+            _push_stream("POST", path, caller)
             task_id = path.split("/")[3]
             return self._post_done(task_id)
         if path == "/api/memory":
+            _push_stream("POST", path, caller)
             return self._post_memory(body)
         if path == "/api/messages":
+            _push_stream("POST", path, caller)
             return self._post_message(body)
 
         self._json({"error": "not found"}, 404)
 
     def do_DELETE(self):
         path = self.path.split("?")[0].rstrip("/")
+        caller = (self.headers.get("X-Curmux-Session") or "").strip()
         if path.startswith("/api/sessions/"):
+            _push_stream("DELETE", path, caller)
             name = path.split("/")[3]
             return self._delete_session(name)
         if path.startswith("/api/tasks/"):
+            _push_stream("DELETE", path, caller)
             task_id = path.split("/")[3]
             return self._delete_task(task_id)
         self._json({"error": "not found"}, 404)
@@ -867,6 +936,67 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         rows = db.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         self._json([dict(r) for r in rows])
 
+    def _get_docs(self):
+        """Return full API reference as plain text for GET /api/docs."""
+        doc = """curmux API reference
+
+Base URL: Use CURMUX_API_URL from environment (default http://localhost:8833). No auth. Send Content-Type: application/json for request bodies.
+
+Environment (set when session is started by curmux):
+  CURMUX_SESSION  Session name. Use as "agent" when claiming tasks and as "sender" in messages.
+  CURMUX_API_URL  Base URL for all API requests.
+  CURMUX_CONTEXT  Short hint: API base, session, "Full API reference: GET <url>/api/docs", "Agents doc: GET <url>/api/agents"
+
+Sessions
+  GET  /api/sessions              List all sessions (name, directory, running, detected_status, ...)
+  GET  /api/sessions/{name}/status   Status for one session (idle, working, waiting, exited)
+  GET  /api/sessions/{name}/peek?lines=200   Recent pane output
+  POST /api/sessions/{name}/send   Body: {"text": "..."}
+
+Task board (status: todo -> claimed -> done)
+  GET    /api/tasks?project=&status=   List tasks
+  POST   /api/tasks   Body: {"project": "", "title": "", "description": ""}
+  POST   /api/tasks/{id}/claim   Body: {"agent": "<session-name>"}
+  POST   /api/tasks/{id}/done
+  DELETE /api/tasks/{id}
+
+Memory
+  GET  /api/memory       List all
+  GET  /api/memory?key=  Get one
+  POST /api/memory       Body: {"key": "", "value": ""}
+
+Messages
+  GET  /api/messages   List recent (limit 100)
+  GET  /api/messages?recipient=   For one session
+  POST /api/messages   Body: {"sender": "", "recipient": "", "body": ""}
+
+Alerts
+  GET  /api/alerts?limit=50   Recent alerts
+
+Agents doc
+  GET  /api/agents   Returns AGENTS.md (agent rules and coordination reference)
+
+Stream (API call log)
+  GET  /api/stream?limit=50   Recent API calls (timestamp, caller, method, path)
+  Optional request header: X-Curmux-Session identifies caller in Stream tab.
+"""
+        self._text(doc)
+
+    def _get_agents(self):
+        """Return AGENTS.md for GET /api/agents (from script directory)."""
+        agents_path = os.path.join(_script_dir(), "AGENTS.md")
+        if not os.path.isfile(agents_path):
+            return self._json({"error": "AGENTS.md not found"}, 404)
+        with open(agents_path, encoding="utf-8") as f:
+            body = f.read()
+        self._text(body, content_type="text/markdown; charset=utf-8")
+
+    def _get_stream(self, limit=50):
+        db = get_db()
+        rows = db.execute("SELECT * FROM stream ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        out = [dict(r) | {"api_call": f"{r['method']} {r['path']}"} for r in rows]
+        self._json(out)
+
 
 # ── TLS ──────────────────────────────────────────────────────────────────
 
@@ -935,6 +1065,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   --sans:     'DM Sans', system-ui, sans-serif;
   --radius:   10px;
 }
+[data-theme="light"] {
+  --bg:       #f4f5f7;
+  --surface:  #ffffff;
+  --surface2: #e8eaee;
+  --border:   #d1d5db;
+  --text:     #1a1d21;
+  --text-dim: #6b7280;
+  --accent:   #0066cc;
+  --accent2:  #0088ff;
+  --green:    #16a34a;
+  --yellow:   #ca8a04;
+  --red:      #dc2626;
+  --orange:   #ea580c;
+}
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   font-family: var(--sans);
@@ -970,8 +1114,19 @@ header .version {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-dim);
-  margin-left: 10px;
 }
+.theme-toggle {
+  padding: 4px 8px;
+  font-size: 16px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.theme-toggle:hover { border-color: var(--accent); opacity: 0.9; }
 header .tabs {
   display: flex;
   gap: 2px;
@@ -1278,23 +1433,26 @@ main { padding: 24px; overflow-y: auto; }
 }
 </style>
 </head>
-<body>
+<body id="dashboard-body">
 <div class="shell">
   <header>
-    <div style="display:flex;align-items:baseline;">
+    <div style="display:flex;align-items:baseline;gap:10px;">
       <span class="logo">curmux</span>
       <span class="version">v{{VERSION}}</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle theme">☀️</button>
     </div>
     <div class="tabs">
       <button class="tab active" onclick="showTab('sessions')">Sessions</button>
       <button class="tab" onclick="showTab('board')">Board</button>
       <button class="tab" onclick="showTab('alerts')">Alerts</button>
+      <button class="tab" onclick="showTab('stream')">Stream</button>
     </div>
   </header>
   <main>
     <div id="tab-sessions"></div>
     <div id="tab-board" style="display:none;"></div>
     <div id="tab-alerts" style="display:none;"></div>
+    <div id="tab-stream" style="display:none;"></div>
   </main>
 </div>
 
@@ -1317,15 +1475,70 @@ main { padding: 24px; overflow-y: auto; }
 
 <script>
 const API = '';
+const THEME_KEY = 'curmux-theme';
+const REFRESH_PARAM = (function(){
+  const m = location.search.match(/[?&]refresh=(\\d+)/);
+  return m ? Math.max(5, Math.min(300, parseInt(m[1], 10))) : 10;
+})();  // seconds; default 10; override with ?refresh=15
 let currentTab = 'sessions';
 let peekSession = null;
 let peekInterval = null;
+
+function saveFocus(container) {
+  const active = document.activeElement;
+  if (!active || !container.contains(active)) return null;
+  if (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA') return null;
+  if (!active.id) return null;
+  return { id: active.id, start: active.selectionStart, end: active.selectionEnd };
+}
+function restoreFocus(saved) {
+  if (!saved) return;
+  const el = document.getElementById(saved.id);
+  if (!el) return;
+  el.focus();
+  if (typeof el.selectionStart === 'number') el.setSelectionRange(saved.start, saved.end);
+}
+
+function getStoredTheme() {
+  try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; }
+}
+function setStoredTheme(theme) {
+  try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+}
+function applyTheme(theme) {
+  const body = document.getElementById('dashboard-body');
+  const btn = document.getElementById('theme-toggle');
+  if (!body || !btn) return;
+  if (theme === 'light') {
+    body.setAttribute('data-theme', 'light');
+    btn.textContent = '🌙';
+    btn.title = 'Switch to dark mode';
+  } else {
+    body.removeAttribute('data-theme');
+    btn.textContent = '☀️';
+    btn.title = 'Switch to light mode';
+  }
+}
+function toggleTheme() {
+  const body = document.getElementById('dashboard-body');
+  const next = body && body.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  setStoredTheme(next);
+}
+(function initTheme() {
+  const stored = getStoredTheme();
+  if (stored === 'light' || stored === 'dark') {
+    applyTheme(stored);
+  } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+    applyTheme('light');
+  }
+})();
 
 function showTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector(`.tab[onclick*="${tab}"]`).classList.add('active');
-  ['sessions','board','alerts'].forEach(t => {
+  ['sessions','board','alerts','stream'].forEach(t => {
     document.getElementById('tab-'+t).style.display = t===tab ? '' : 'none';
   });
   refresh();
@@ -1335,10 +1548,12 @@ async function refresh() {
   if (currentTab === 'sessions') await renderSessions();
   else if (currentTab === 'board') await renderBoard();
   else if (currentTab === 'alerts') await renderAlerts();
+  else if (currentTab === 'stream') await renderStream();
 }
 
 async function renderSessions() {
   const el = document.getElementById('tab-sessions');
+  const savedFocus = saveFocus(el);
   try {
     const r = await fetch(API+'/api/sessions');
     const sessions = await r.json();
@@ -1370,10 +1585,12 @@ async function renderSessions() {
   } catch(e) {
     el.innerHTML = '<div class="empty">Error loading sessions</div>';
   }
+  restoreFocus(savedFocus);
 }
 
 async function renderBoard() {
   const el = document.getElementById('tab-board');
+  const savedFocus = saveFocus(el);
   const prevTitle = document.getElementById('new-task-title')?.value ?? '';
   const prevProject = document.getElementById('new-task-project')?.value ?? '';
   try {
@@ -1408,15 +1625,18 @@ async function renderBoard() {
   } catch(e) {
     el.innerHTML = '<div class="empty">Error loading board</div>';
   }
+  restoreFocus(savedFocus);
 }
 
 async function renderAlerts() {
   const el = document.getElementById('tab-alerts');
+  const savedFocus = saveFocus(el);
   try {
     const r = await fetch(API+'/api/alerts?limit=50');
     const alerts = await r.json();
     if (!alerts.length) {
       el.innerHTML = '<div class="empty">No alerts yet</div>';
+      restoreFocus(savedFocus);
       return;
     }
     el.innerHTML = '<div class="alerts-list">'+alerts.map(a => {
@@ -1431,6 +1651,34 @@ async function renderAlerts() {
   } catch(e) {
     el.innerHTML = '<div class="empty">Error loading alerts</div>';
   }
+  restoreFocus(savedFocus);
+}
+
+async function renderStream() {
+  const el = document.getElementById('tab-stream');
+  const savedFocus = saveFocus(el);
+  try {
+    const r = await fetch(API+'/api/stream?limit=50');
+    const rows = await r.json();
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No API calls yet</div>';
+      restoreFocus(savedFocus);
+      return;
+    }
+    el.innerHTML = '<div class="alerts-list">'+rows.map(a => {
+      const d = new Date(a.created_at * 1000);
+      const ts = d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const caller = (a.caller && a.caller.trim()) ? esc(a.caller) : '-';
+      return `<div class="alert-row stream-row">
+        <span class="alert-time">${ts}</span>
+        <span class="alert-type">${caller}</span>
+        <span class="alert-msg">${esc(a.api_call || (a.method+' '+a.path))}</span>
+      </div>`;
+    }).join('')+'</div>';
+  } catch(e) {
+    el.innerHTML = '<div class="empty">Error loading stream</div>';
+  }
+  restoreFocus(savedFocus);
 }
 
 async function startSession(name) {
@@ -1494,7 +1742,7 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, REFRESH_PARAM * 1000);
 </script>
 </body>
 </html>""".replace("{{VERSION}}", get_version())
@@ -1559,6 +1807,7 @@ def build_parser():
     # start
     st = sub.add_parser("start", help="Start a registered session")
     st.add_argument("name", help="Session name (prefix match)")
+    st.add_argument("--seed", action="store_true", help="Send one-line prompt so agent reads CURMUX_CONTEXT")
 
     # update
     up = sub.add_parser("update", aliases=["set"], help="Update session settings")
@@ -1599,6 +1848,7 @@ def build_parser():
     ex.add_argument("--yolo", action="store_true", help="Run in yolo/force mode")
     ex.add_argument("--model", "-m", help="Model to use")
     ex.add_argument("--worktree", "-w", action="store_true", help="Use git worktree isolation")
+    ex.add_argument("--seed", action="store_true", help="Send one-line prompt so agent reads CURMUX_CONTEXT")
     ex.add_argument("prompt", nargs="*", help="Initial prompt")
 
     # ls / list

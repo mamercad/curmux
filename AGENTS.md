@@ -10,7 +10,7 @@ Single-file Cursor Agent multiplexer. Everything lives in the `curmux` executabl
 
 ## Data
 
-All runtime state in `~/.curmux/curmux.db` (SQLite WAL mode). Tables: `sessions`, `tasks`, `messages`, `memory`, `alerts`.
+All runtime state in `~/.curmux/curmux.db` (SQLite WAL mode). Tables: `sessions`, `tasks`, `messages`, `memory`, `alerts`, `stream`.
 
 ## Workflow
 
@@ -38,8 +38,89 @@ Key patterns:
 
 ## Agent coordination
 
-Cursor agents coordinate via the REST API (available when `curmux serve` is running):
-- Claim tasks atomically: `POST /api/tasks/{id}/claim`
-- Share context: `POST /api/memory` with `{key, value}`
-- Send messages: `POST /api/messages` with `{sender, recipient, body}`
-- Check peer status: `GET /api/sessions/{name}/status`
+Cursor agents running in curmux-managed sessions can coordinate via the REST API. The API is available only when `curmux serve` is running.
+
+**Task-based workflow**: Always break problems into discrete tasks and use the kanban board (task board). Create tasks via the API or dashboard, claim one at a time with your session as `agent`, do the work, then mark the task done. Avoid tackling multi-step work without creating and claiming tasks first.
+
+**Base URL**: `https://localhost:{port}` (TLS by default) or `http://localhost:{port}` with `--no-tls`. Default port: **8833**. No authentication (local use only). Send `Content-Type: application/json` for request bodies.
+
+**Session identity**: curmux sets `CURMUX_SESSION`, `CURMUX_API_URL`, and `CURMUX_CONTEXT` in the process environment when starting a session. Use `CURMUX_SESSION` as `agent` when claiming tasks and as `sender` when posting messages; use `CURMUX_API_URL` as the base for all API requests; read `CURMUX_CONTEXT` for a short hint (API base, session, full API reference, agents doc). Full reference: GET /api/docs. Agents doc (this file): GET /api/agents.
+
+### Environment
+
+When the process is started by curmux (`curmux start` or `curmux exec`), these variables are set:
+
+| Variable | Description |
+|----------|-------------|
+| `CURMUX_SESSION` | Session name. Use as `agent` when claiming tasks and as `sender` in messages. |
+| `CURMUX_API_URL` | Base URL (default `http://localhost:8833`). |
+| `CURMUX_CONTEXT` | Short hint: "You're in curmux. API base: … Your session: … Full API reference: GET …/api/docs. Agents doc: GET …/api/agents". |
+
+They are only set when the process is started by curmux.
+
+### Sessions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/sessions` | List all sessions. Each item: `name`, `directory`, `yolo`, `model`, `worktree`, `running`, `detected_status`, plus DB fields. |
+| GET | `/api/sessions/{name}/status` | Status for one session: `name`, `status` (e.g. idle, working, waiting, exited), `running`. |
+| GET | `/api/sessions/{name}/peek?lines=200` | Recent pane output (for debugging). |
+| POST | `/api/sessions/{name}/send` | Send keys to session. Body: `{"text": "..."}`. |
+
+### Task board
+
+Agents should use the task board for all non-trivial work: break the work into tasks, create them (POST /api/tasks or dashboard), claim one (POST /api/tasks/{id}/claim), complete it, then POST /api/tasks/{id}/done before claiming another.
+
+Tasks have status: `todo` → `claimed` → `done`. Filter by `status` and optionally `project`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/tasks?project=&status=` | List tasks. Query params optional: `project`, `status` (todo/claimed/done). |
+| POST | `/api/tasks` | Create task. Body: `{"project": "", "title": "", "description": ""}`. Returns `{"ok": true, "id": "..."}`. |
+| POST | `/api/tasks/{id}/claim` | Claim a todo task atomically. Body: `{"agent": "<session-name>"}`. Returns 409 if not todo. |
+| POST | `/api/tasks/{id}/done` | Mark task done. |
+| DELETE | `/api/tasks/{id}` | Delete a task. |
+
+### Memory (shared key-value)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/memory` | List all keys and values. |
+| GET | `/api/memory?key=<key>` | Get one value (empty object if missing). |
+| POST | `/api/memory` | Set or overwrite. Body: `{"key": "", "value": ""}`. |
+
+### Messages (agent-to-agent)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/messages` | List recent messages (limit 100). |
+| GET | `/api/messages?recipient=<name>` | Messages for one session. |
+| POST | `/api/messages` | Send. Body: `{"sender": "", "recipient": "", "body": ""}`. |
+
+### Alerts
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/alerts?limit=50` | Recent alerts (e.g. start/stop events). |
+
+### Agents doc
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/agents` | Returns AGENTS.md (this file) as text/markdown. |
+
+### Stream (API call log)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/stream?limit=50` | Recent API calls (timestamp, caller, method, path). |
+
+Optional request header **X-Curmux-Session** identifies the caller in the dashboard Stream tab.
+
+### API reference (GET /api/docs)
+
+When the server is running, GET /api/docs returns the full API reference. Use GET {CURMUX_API_URL}/api/docs so the reference is unambiguous regardless of repo.
+
+### Optional seed (--seed)
+
+You can start sessions with `curmux start <name> --seed` or `curmux exec <name> --dir <path> --seed` to send a one-line prompt so the agent reads CURMUX_CONTEXT from the environment.
