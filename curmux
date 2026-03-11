@@ -897,6 +897,16 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             return self._delete_task(task_id)
         self._json({"error": "not found"}, 404)
 
+    def do_PATCH(self):
+        path = self.path.split("?")[0].rstrip("/")
+        body = self._read_body()
+        caller = (self.headers.get("X-Curmux-Session") or "").strip()
+        parts = path.split("/")
+        if len(parts) == 4 and parts[1] == "api" and parts[2] == "tasks" and not path.endswith("/claim") and not path.endswith("/done"):
+            _push_stream("PATCH", path, caller)
+            return self._patch_task(parts[3], body)
+        self._json({"error": "not found"}, 404)
+
     # ── Session endpoints ────────────────────────────────────────────────
 
     def _get_sessions(self):
@@ -1030,6 +1040,40 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         db.commit()
         self._json({"ok": True})
 
+    def _patch_task(self, task_id, body):
+        db = get_db()
+        row = db.execute("SELECT id, status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not row:
+            return self._json({"error": "task not found"}, 404)
+        status = body.get("status")
+        if status not in ("todo", "claimed", "done"):
+            return self._json({"error": "invalid status"}, 400)
+        now = time.time()
+        if status == "todo":
+            db.execute(
+                "UPDATE tasks SET status='todo', claimed_by=NULL, claimed_at=NULL WHERE id=?",
+                (task_id,),
+            )
+        elif status == "claimed":
+            claimed_by = body.get("claimed_by")
+            if claimed_by is not None:
+                db.execute(
+                    "UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=? WHERE id=?",
+                    (claimed_by, now, task_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE tasks SET status='claimed', claimed_at=? WHERE id=?",
+                    (now, task_id),
+                )
+        else:
+            db.execute(
+                "UPDATE tasks SET status='done', completed_at=? WHERE id=?",
+                (now, task_id),
+            )
+        db.commit()
+        self._json({"ok": True, "id": task_id})
+
     # ── Memory endpoints ─────────────────────────────────────────────────
 
     def _get_memory(self, key=None):
@@ -1098,6 +1142,7 @@ Task board (status: todo -> claimed -> done)
   POST   /api/tasks   Body: {"project": "", "title": "", "description": ""}
   POST   /api/tasks/{id}/claim   Body: {"agent": "<session-name>"}
   POST   /api/tasks/{id}/done
+  PATCH  /api/tasks/{id}   Body: {"status": "todo"|"claimed"|"done", optional "claimed_by": ""}
   DELETE /api/tasks/{id}
 
 Memory
@@ -1508,6 +1553,8 @@ main { padding: 24px; overflow-y: auto; }
   color: var(--yellow);
   margin-top: 6px;
 }
+.task-card.dragging { opacity: 0.6; }
+.board-col.drag-over { background: var(--surface2); border-radius: 8px; }
 
 /* ── Alerts ──────────────────────────────── */
 .alerts-list { max-width: 700px; }
@@ -1765,10 +1812,10 @@ async function renderBoard() {
       </div>
       <div class="board">
         ${['todo','claimed','done'].map(status => `
-          <div class="board-col">
+          <div class="board-col" data-status="${status}" ondragover="boardColDragOver(event)" ondragleave="boardColDragLeave(event)" ondrop="boardColDrop(event)">
             <h3 class="${status}">${status} (${cols[status].length})</h3>
             ${cols[status].map(t => `
-              <div class="task-card">
+              <div class="task-card" draggable="true" data-task-id="${esc(t.id)}" data-status="${t.status}" ondragstart="boardCardDragStart(event)" ondragend="boardCardDragEnd(event)">
                 <div class="task-id">${esc(t.id)}</div>
                 <div class="task-title">${esc(t.title)}</div>
                 ${t.claimed_by ? `<div class="task-agent">${esc(t.claimed_by)}</div>` : ''}
@@ -1883,6 +1930,36 @@ async function sendFromPeek() {
   setTimeout(refreshPeek, 500);
 }
 
+function boardCardDragStart(e) {
+  const card = e.target.closest('.task-card');
+  if (!card) return;
+  e.dataTransfer.setData('text/plain', card.dataset.taskId || '');
+  e.dataTransfer.effectAllowed = 'move';
+  card.classList.add('dragging');
+}
+function boardCardDragEnd(e) {
+  e.target.closest('.task-card')?.classList.remove('dragging');
+  document.querySelectorAll('.board-col.drag-over').forEach(c => c.classList.remove('drag-over'));
+}
+function boardColDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+function boardColDragLeave(e) {
+  if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.classList.remove('drag-over');
+}
+async function boardColDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const id = e.dataTransfer.getData('text/plain');
+  const toStatus = e.currentTarget.dataset.status;
+  if (!id || !toStatus) return;
+  try {
+    const r = await fetch(API+'/api/tasks/'+encodeURIComponent(id), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: toStatus }) });
+    if (r.ok) await renderBoard();
+  } catch(err) {}
+}
 async function addTask() {
   const title = document.getElementById('new-task-title').value.trim();
   const project = document.getElementById('new-task-project').value.trim();

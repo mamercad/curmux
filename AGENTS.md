@@ -41,7 +41,9 @@ Key patterns:
 
 Cursor agents running in curmux-managed sessions can coordinate via the REST API. The API is available only when `curmux serve` is running.
 
-**Task-based workflow**: Always break problems into discrete tasks and use the kanban board (task board). Create tasks via the API or dashboard, claim one at a time with your session as `agent`, do the work, then mark the task done. Avoid tackling multi-step work without creating and claiming tasks first.
+**Task-based workflow**: For non-trivial work, use the kanban board (task board). If no suitable task exists, ask the user whether one should be created. Create tasks via the API or dashboard, claim one at a time with your session as `agent`, do the work, then mark the task done. Avoid tackling multi-step work without creating and claiming tasks first.
+
+**Planning before implementation**: Before implementing non-trivial work, write a plan to `docs/<meaningful-name>.md` (e.g. `docs/api-auth-plan.md`). In the plan, identify work that can be parallelized and assign it to multiple sessions—create new curmux sessions where appropriate so several agents can run in parallel. Then execute the plan (claim board tasks, spin up sessions as needed, implement).
 
 **Board task checklist** (when working on a kanban item; use `CURMUX_SESSION` and `CURMUX_API_URL` from env):
 1. **Claim**: `GET {CURMUX_API_URL}/api/tasks?status=todo` → pick a task → `POST {CURMUX_API_URL}/api/tasks/{id}/claim` with body `{"agent": "<CURMUX_SESSION>"}`.
@@ -74,7 +76,7 @@ They are only set when the process is started by curmux.
 
 ### Task board
 
-Agents should use the task board for all non-trivial work: break the work into tasks, create them (POST /api/tasks or dashboard), claim one (POST /api/tasks/{id}/claim), complete it, then **POST /api/tasks/{id}/done** before claiming another. Closure for a claimed task: (1) mark done via the API, (2) commit. Skipping the done call leaves the board out of sync.
+Agents should work from the task board for all non-trivial work. If no task exists for the work at hand, ask the user if a task should be created. Then: break the work into tasks, create them (POST /api/tasks or dashboard), claim one (POST /api/tasks/{id}/claim), complete it, then **POST /api/tasks/{id}/done** before claiming another. Closure for a claimed task: (1) mark done via the API, (2) commit. Skipping the done call leaves the board out of sync.
 
 Tasks have status: `todo` → `claimed` → `done`. Filter by `status` and optionally `project`.
 
@@ -84,6 +86,7 @@ Tasks have status: `todo` → `claimed` → `done`. Filter by `status` and optio
 | POST | `/api/tasks` | Create task. Body: `{"project": "", "title": "", "description": ""}`. Returns `{"ok": true, "id": "..."}`. |
 | POST | `/api/tasks/{id}/claim` | Claim a todo task atomically. Body: `{"agent": "<session-name>"}`. Returns 409 if not todo. |
 | POST | `/api/tasks/{id}/done` | Mark task done. |
+| PATCH | `/api/tasks/{id}` | Update task. Body: `{"status": "todo"|"claimed"|"done", "claimed_by": ""}` (claimed_by optional). 400 if invalid status, 404 if not found. |
 | DELETE | `/api/tasks/{id}` | Delete a task. |
 
 ### Memory (shared key-value)
