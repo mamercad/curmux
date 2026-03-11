@@ -504,6 +504,130 @@ def _short_id():
     return hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:6].upper()
 
 
+# ── Shell completion ──────────────────────────────────────────────────
+
+_SUBCOMMANDS = [
+    "register", "start", "stop", "update", "rm", "attach", "peek", "send",
+    "exec", "ls", "list", "board", "serve",
+]
+_BOARD_ACTIONS = ["add", "claim", "done", "list", "ls"]
+
+
+def _session_names_completion(prefix):
+    """Return session names from DB that start with prefix. Empty list on error."""
+    try:
+        db = get_db()
+        rows = db.execute("SELECT name FROM sessions ORDER BY name").fetchall()
+        return [r["name"] for r in rows if r["name"].startswith(prefix)]
+    except Exception:
+        return []
+
+
+def _task_ids_completion(prefix):
+    """Return task IDs from DB that start with prefix. Empty list on error."""
+    try:
+        db = get_db()
+        rows = db.execute("SELECT id FROM tasks ORDER BY id").fetchall()
+        return [r["id"] for r in rows if r["id"].startswith(prefix)]
+    except Exception:
+        return []
+
+
+def _projects_completion(prefix):
+    """Return distinct project values that start with prefix. Empty list on error."""
+    try:
+        db = get_db()
+        rows = db.execute(
+            "SELECT DISTINCT project FROM tasks WHERE project != '' ORDER BY project"
+        ).fetchall()
+        return [r["project"] for r in rows if r["project"].startswith(prefix)]
+    except Exception:
+        return []
+
+
+def get_completions(words, current_word, word_index):
+    """
+    Return list of completion strings for the given token list and cursor position.
+    words[0] is 'curmux'; word_index is 0-based.
+    """
+    if word_index <= 0:
+        return []
+    if word_index == 1:
+        return [c for c in _SUBCOMMANDS if c.startswith(current_word)]
+
+    cmd = words[1] if len(words) > 1 else None
+    if cmd == "board":
+        if word_index == 2:
+            return [a for a in _BOARD_ACTIONS if a.startswith(current_word)]
+        if len(words) > 2 and words[2] in ("claim", "done") and word_index == 3:
+            return _task_ids_completion(current_word)
+        if len(words) > 2 and words[2] == "add" and word_index >= 3:
+            # Complete --project value if previous word is -p or --project
+            prev = words[word_index - 1] if word_index > 0 else ""
+            if prev in ("--project", "-p"):
+                return _projects_completion(current_word)
+        return []
+
+    if cmd in ("start", "stop", "update", "attach", "peek", "send", "rm") and word_index == 2:
+        return _session_names_completion(current_word)
+    if cmd == "exec" and word_index == 2:
+        return _session_names_completion(current_word)
+    if cmd == "register" and word_index == 2:
+        return _session_names_completion(current_word)
+    return []
+
+
+def cmd_completion(args):
+    """Print completion script for bash or zsh."""
+    if args.shell == "bash":
+        print(_BASH_COMPLETION_SCRIPT)
+    else:
+        print(_ZSH_COMPLETION_SCRIPT)
+
+
+def cmd__complete(args):
+    """Internal: output completions one per line for use by completion scripts."""
+    try:
+        shell = args.shell
+        rest = getattr(args, "rest", []) or []
+        if shell == "bash":
+            line = rest[0] if len(rest) >= 1 else ""
+            point = int(rest[1]) if len(rest) >= 2 else 0
+            words = line[:point].split()
+            current_word = words[-1] if words else ""
+            word_index = len(words) - 1
+        else:  # zsh
+            if not rest:
+                return
+            current_one_based = int(rest[-1])
+            words = rest[:-1]
+            word_index = current_one_based - 1
+            current_word = words[word_index] if 0 <= word_index < len(words) else ""
+
+        for c in get_completions(words, current_word, word_index):
+            print(c)
+    except Exception:
+        pass
+
+
+_BASH_COMPLETION_SCRIPT = r'''# Bash completion for curmux
+_curmux_complete() {
+  mapfile -t COMPREPLY < <(curmux __complete bash "$COMP_LINE" $COMP_POINT 2>/dev/null)
+}
+complete -F _curmux_complete curmux
+'''
+
+_ZSH_COMPLETION_SCRIPT = r'''# Zsh completion for curmux
+_curmux() {
+  local -a words; words=("${(@)words}")
+  local -a reply
+  reply=("${(@f)$(curmux __complete zsh "${words[@]}" $CURRENT 2>/dev/null)}")
+  [[ -n $reply ]] && compadd -a reply
+}
+compdef _curmux curmux
+'''
+
+
 # ── Alerts ───────────────────────────────────────────────────────────────
 
 
@@ -1480,7 +1604,13 @@ const REFRESH_PARAM = (function(){
   const m = location.search.match(/[?&]refresh=(\\d+)/);
   return m ? Math.max(5, Math.min(300, parseInt(m[1], 10))) : 10;
 })();  // seconds; default 10; override with ?refresh=15
+const TAB_NAMES = ['sessions','board','alerts','stream'];
 let currentTab = 'sessions';
+var hashTab = (function(){
+  const h = location.hash.slice(1).toLowerCase();
+  return TAB_NAMES.indexOf(h) >= 0 ? h : 'sessions';
+})();
+if (hashTab !== 'sessions') currentTab = hashTab;
 let peekSession = null;
 let peekInterval = null;
 
@@ -1533,12 +1663,25 @@ function toggleTheme() {
     applyTheme('light');
   }
 })();
+(function initTabFromHash() {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  var el = document.querySelector('.tab[onclick*="'+currentTab+'"]');
+  if (el) el.classList.add('active');
+  TAB_NAMES.forEach(t => {
+    document.getElementById('tab-'+t).style.display = t===currentTab ? '' : 'none';
+  });
+})();
+window.addEventListener('hashchange', function() {
+  const h = location.hash.slice(1).toLowerCase();
+  if (TAB_NAMES.indexOf(h) >= 0 && h !== currentTab) showTab(h);
+});
 
 function showTab(tab) {
   currentTab = tab;
+  if (location.hash.slice(1).toLowerCase() !== tab) location.hash = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector(`.tab[onclick*="${tab}"]`).classList.add('active');
-  ['sessions','board','alerts','stream'].forEach(t => {
+  TAB_NAMES.forEach(t => {
     document.getElementById('tab-'+t).style.display = t===tab ? '' : 'none';
   });
   refresh();
@@ -1876,6 +2019,15 @@ def build_parser():
     sv.add_argument("--port", "-p", type=int, default=DEFAULT_PORT, help=f"Port (default: {DEFAULT_PORT})")
     sv.add_argument("--no-tls", action="store_true", help="Disable TLS")
 
+    # completion
+    comp = sub.add_parser("completion", help="Print shell completion script")
+    comp.add_argument("shell", choices=["bash", "zsh"], help="Shell (bash or zsh)")
+
+    # __complete (internal, used by completion scripts)
+    internal = sub.add_parser("__complete", help=argparse.SUPPRESS)
+    internal.add_argument("shell", choices=["bash", "zsh"])
+    internal.add_argument("rest", nargs="*", help=argparse.SUPPRESS)
+
     return p
 
 
@@ -1901,6 +2053,8 @@ def main():
         "list": cmd_ls,
         "board": cmd_board,
         "serve": cmd_serve,
+        "completion": cmd_completion,
+        "__complete": cmd__complete,
     }
 
     if not args.command:

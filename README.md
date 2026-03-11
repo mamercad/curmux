@@ -133,6 +133,18 @@ curmux attach api
 curmux serve   # → https://localhost:8833
 ```
 
+**Shell completion (optional)** — tab-complete subcommands, session names, and task IDs:
+
+```bash
+# Bash: current session only
+source <(curmux completion bash)
+
+# Zsh: current session only
+source <(curmux completion zsh)
+```
+
+To install permanently, see [Shell completion](#shell-completion) below.
+
 ## CLI
 
 ```bash
@@ -154,6 +166,37 @@ curmux serve [--port 8833]    # web dashboard + watchdog
 ```
 
 Session names support prefix matching — `curmux peek my` resolves to `myproject` if unambiguous.
+
+## Shell completion
+
+Tab-complete subcommands (`start`, `board`, …), session names, and task IDs.
+
+**Bash** (current session):
+
+```bash
+source <(curmux completion bash)
+```
+
+**Bash** (persistent): install the script and source it from `~/.bashrc`:
+
+```bash
+curmux completion bash > ~/.local/share/bash-completion/completions/curmux
+# Then ensure your bashrc loads completions from that dir, e.g.:
+# [ -d ~/.local/share/bash-completion/completions ] && for f in ~/.local/share/bash-completion/completions/*; do source "$f"; done
+```
+
+**Zsh** (current session):
+
+```bash
+source <(curmux completion zsh)
+```
+
+**Zsh** (persistent): add to `~/.zshrc` or put the script in a directory in `fpath` and run `compinit`:
+
+```bash
+curmux completion zsh > ~/.zsh/completions/_curmux
+# In ~/.zshrc: fpath=(~/.zsh/completions $fpath) and compinit
+```
 
 ## Watchdog
 
