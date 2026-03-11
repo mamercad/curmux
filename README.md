@@ -1,10 +1,10 @@
 # curmux — Cursor Agent Multiplexer
 
-Run parallel `cursor agent` TUI sessions with a self-healing watchdog, shared task board, and web dashboard. Single file. No external dependencies beyond Python 3 + tmux.
+Run parallel `cursor-agent` TUI sessions with a self-healing watchdog, shared task board, and web dashboard. Single file. No external dependencies beyond Python 3 + tmux.
 
 ```bash
 git clone https://github.com/mamercad/curmux && cd curmux && ./install.sh
-curmux register myproject --dir ~/project --yolo
+curmux register myproject --dir ~/myproject --yolo
 curmux start myproject
 curmux serve   # → https://localhost:8833
 ```
@@ -16,14 +16,38 @@ curmux serve   # → https://localhost:8833
 | Problem | curmux's solution |
 |---------|-------------------|
 | Can't run multiple cursor agents at once | **tmux-backed sessions** — each agent in its own pane |
-| Agent crashes or exits mid-task | **Self-healing watchdog** — auto-restarts with `--continue` |
+| Agent crashes or exits mid-task | **Self-healing watchdog** — auto-restarts with `cursor-agent --continue` |
 | Agents duplicate work | **Task board** — SQLite-backed atomic claiming |
 | No visibility across sessions | **Web dashboard** — live status, peek, send |
 | Agents can't coordinate | **REST API** — shared memory, messaging, task delegation |
 
+---
+
+## Dashboard
+
+### Sessions
+
+Live status cards for every registered agent. Start, stop, and peek from the browser.
+
+![Sessions view](docs/sessions.svg)
+
+### Task Board
+
+SQLite-backed kanban with atomic task claiming. Agents claim work via the REST API; no duplicated effort.
+
+![Board view](docs/board.svg)
+
+### Peek
+
+Full terminal output with a send bar — monitor and direct agents without attaching to tmux.
+
+![Peek view](docs/peek.svg)
+
+---
+
 ## Features
 
-- **Parallel agents** — register and run many `cursor agent` sessions, each in tmux
+- **Parallel agents** — register and run many `cursor-agent` sessions, each in tmux
 - **Watchdog** — detects exited/stuck agents, auto-restarts in yolo mode, auto-accepts confirmations
 - **Task board** — SQLite-backed kanban with atomic task claiming (CAS)
 - **Web dashboard** — session cards, live peek, send bar, task board, alerts
@@ -37,7 +61,7 @@ curmux serve   # → https://localhost:8833
 
 - Python 3.8+
 - tmux
-- [Cursor CLI](https://cursor.sh) (`cursor agent`)
+- [Cursor Agent CLI](https://cursor.sh) (`cursor-agent`)
 
 ## Install
 
@@ -45,11 +69,29 @@ curmux serve   # → https://localhost:8833
 git clone https://github.com/mamercad/curmux && cd curmux && ./install.sh
 ```
 
-Or manually:
+Or directly:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mamercad/curmux/main/curmux -o /usr/local/bin/curmux
 chmod +x /usr/local/bin/curmux
+```
+
+## Quick Start
+
+```bash
+# Register agents pointing at a git repo
+curmux register api --dir ~/myproject --yolo --model sonnet-4
+curmux register frontend --dir ~/myproject --yolo --worktree
+
+# Launch them
+curmux start api
+curmux start frontend
+
+# Attach to a session's TUI
+curmux attach api
+
+# Or monitor everything from the browser
+curmux serve   # → https://localhost:8833
 ```
 
 ## CLI
@@ -58,7 +100,7 @@ chmod +x /usr/local/bin/curmux
 curmux register <name> --dir <path> [--yolo] [--model sonnet-4] [--worktree]
 curmux start <name>
 curmux stop <name>
-curmux attach <name>          # attach to tmux session
+curmux attach <name>          # attach to tmux session (detach: Ctrl-b d)
 curmux peek <name>            # view output without attaching
 curmux send <name> <text>     # send text to a session
 curmux exec <name> --dir <path> [--yolo] -- <prompt>
@@ -78,13 +120,15 @@ When `curmux serve` is running, the watchdog checks all sessions every 15 second
 
 | Condition | Action |
 |-----------|--------|
-| Agent exited to shell prompt (yolo mode) | Auto-restarts with `cursor agent --continue` |
+| Agent exited to shell prompt (yolo mode) | Auto-restarts with `cursor-agent --continue` |
 | Agent waiting for confirmation (yolo mode) | Auto-accepts after 30s |
 | Agent idle for 10+ minutes | Pushes a `stuck` alert |
 
 ## REST API
 
 All endpoints available at `https://localhost:8833/api/`.
+
+### Sessions
 
 ```bash
 # List sessions
@@ -98,20 +142,46 @@ curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"text":"implement the auth endpoint"}' \
   https://localhost:8833/api/sessions/myproject/send
 
+# Start / stop
+curl -sk -X POST https://localhost:8833/api/sessions/myproject/start
+curl -sk -X POST https://localhost:8833/api/sessions/myproject/stop
+```
+
+### Task Board
+
+```bash
 # Create a task
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Add login endpoint","project":"API"}' \
   https://localhost:8833/api/tasks
 
-# Claim a task
+# Claim a task (atomic — only one agent wins)
 curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"agent":"worker-1"}' \
+  -d '{"agent":"api"}' \
   https://localhost:8833/api/tasks/API-A1B2C3/claim
 
-# Shared memory
+# Complete a task
+curl -sk -X POST https://localhost:8833/api/tasks/API-A1B2C3/done
+```
+
+### Shared Memory & Messaging
+
+```bash
+# Write shared context
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"key":"db_schema","value":"users(id,email,hash)"}' \
   https://localhost:8833/api/memory
+
+# Read shared context
+curl -sk https://localhost:8833/api/memory?key=db_schema
+
+# Send a message between agents
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"sender":"api","recipient":"frontend","body":"auth schema changed"}' \
+  https://localhost:8833/api/messages
+
+# Read messages for an agent
+curl -sk https://localhost:8833/api/messages?recipient=frontend
 ```
 
 ## Data
@@ -120,7 +190,7 @@ All state lives in `~/.curmux/`:
 
 ```
 ~/.curmux/
-├── curmux.db     # SQLite (sessions, tasks, messages, memory, alerts)
+├── curmux.db     # SQLite WAL (sessions, tasks, messages, memory, alerts)
 ├── tls/          # Auto-generated TLS certs
 └── logs/         # Session logs
 ```

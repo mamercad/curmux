@@ -5,7 +5,7 @@ INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
 command -v tmux    >/dev/null 2>&1 || { echo "tmux required";    exit 1; }
-command -v cursor  >/dev/null 2>&1 || echo "warning: cursor CLI not found (needed at runtime)"
+command -v cursor-agent >/dev/null 2>&1 || echo "warning: cursor-agent CLI not found (needed at runtime)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="${SCRIPT_DIR}/curmux"
