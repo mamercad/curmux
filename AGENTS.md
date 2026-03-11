@@ -19,6 +19,7 @@ All runtime state in `~/.curmux/curmux.db` (SQLite WAL mode). Tables: `sessions`
 - **Test changes**: `./curmux --help`, `./curmux ls`, `./curmux serve --no-tls --port 9999`
 - **Validate syntax**: `python3 -c "import ast; ast.parse(open('curmux').read())"`
 - **Commit after every completed task.** Don't batch unrelated changes.
+- **When you complete a claimed board task:** call `POST /api/tasks/{id}/done` (and commit). Do not skip marking done—the board is the source of truth for what's left.
 
 ## Architecture
 
@@ -41,6 +42,10 @@ Key patterns:
 Cursor agents running in curmux-managed sessions can coordinate via the REST API. The API is available only when `curmux serve` is running.
 
 **Task-based workflow**: Always break problems into discrete tasks and use the kanban board (task board). Create tasks via the API or dashboard, claim one at a time with your session as `agent`, do the work, then mark the task done. Avoid tackling multi-step work without creating and claiming tasks first.
+
+**Board task checklist** (when working on a kanban item; use `CURMUX_SESSION` and `CURMUX_API_URL` from env):
+1. **Claim**: `GET {CURMUX_API_URL}/api/tasks?status=todo` → pick a task → `POST {CURMUX_API_URL}/api/tasks/{id}/claim` with body `{"agent": "<CURMUX_SESSION>"}`.
+2. **Done**: When the task is finished, `POST {CURMUX_API_URL}/api/tasks/{id}/done` (then commit). Do not skip—the board is the source of truth.
 
 **Base URL**: `https://localhost:{port}` (TLS by default) or `http://localhost:{port}` with `--no-tls`. Default port: **8833**. No authentication (local use only). Send `Content-Type: application/json` for request bodies.
 
@@ -69,7 +74,7 @@ They are only set when the process is started by curmux.
 
 ### Task board
 
-Agents should use the task board for all non-trivial work: break the work into tasks, create them (POST /api/tasks or dashboard), claim one (POST /api/tasks/{id}/claim), complete it, then POST /api/tasks/{id}/done before claiming another.
+Agents should use the task board for all non-trivial work: break the work into tasks, create them (POST /api/tasks or dashboard), claim one (POST /api/tasks/{id}/claim), complete it, then **POST /api/tasks/{id}/done** before claiming another. Closure for a claimed task: (1) mark done via the API, (2) commit. Skipping the done call leaves the board out of sync.
 
 Tasks have status: `todo` → `claimed` → `done`. Filter by `status` and optionally `project`.
 

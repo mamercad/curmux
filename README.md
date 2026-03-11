@@ -186,13 +186,14 @@ curmux completion bash > ~/.local/share/bash-completion/completions/curmux
 # [ -d ~/.local/share/bash-completion/completions ] && for f in ~/.local/share/bash-completion/completions/*; do source "$f"; done
 ```
 
-**Zsh** (current session):
+**Zsh** (current session): ensure the completion system is loaded first (e.g. you've run `compinit` in this session or your `.zshrc` loads it):
 
 ```bash
+autoload -Uz compinit && compinit   # if not already run
 source <(curmux completion zsh)
 ```
 
-**Zsh** (persistent): add to `~/.zshrc` or put the script in a directory in `fpath` and run `compinit`:
+**Zsh** (persistent): source the script from `~/.zshrc` *after* `compinit` (or add it to a directory in `fpath` and run `compinit`):
 
 ```bash
 curmux completion zsh > ~/.zsh/completions/_curmux

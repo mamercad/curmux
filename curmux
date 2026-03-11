@@ -640,7 +640,7 @@ _curmux() {
   reply=("${(@f)$(curmux __complete zsh "${words[@]}" $CURRENT 2>/dev/null)}")
   [[ -n $reply ]] && compadd -a reply
 }
-compdef _curmux curmux
+[[ -n ${functions[compdef]} ]] && compdef _curmux curmux
 """
 
 
