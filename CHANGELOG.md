@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-10
+
+### Added
+
+- `update` command (alias: `set`) for partial session updates — change `--dir`, `--yolo`, `--no-yolo`, `--model`, `--worktree`, `--no-worktree` without re-registering
+- `rm` command (aliases: `remove`, `del`) to delete sessions — stops tmux if running, cleans up messages, alerts, and task assignments
+
 ## [0.1.0] - 2026-03-10
 
 ### Added
@@ -34,5 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use `cursor-agent` binary instead of `cursor agent` (opens IDE instead of TUI)
 - Pass tmux commands as single shell string via `shlex.quote`
 
-[Unreleased]: https://github.com/mamercad/curmux/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mamercad/curmux/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mamercad/curmux/releases/tag/v0.1.0

@@ -137,8 +137,10 @@ curmux serve   # → https://localhost:8833
 
 ```bash
 curmux register <name> --dir <path> [--yolo] [--model sonnet-4] [--worktree]
+curmux update <name> [--dir <path>] [--yolo] [--no-yolo] [--model M] [--worktree] [--no-worktree]
 curmux start <name>
 curmux stop <name>
+curmux rm <name>              # remove session (stops if running, cleans up DB)
 curmux attach <name>          # attach to tmux session (detach: Ctrl-b d)
 curmux peek <name>            # view output without attaching
 curmux send <name> <text>     # send text to a session

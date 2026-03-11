@@ -259,6 +259,63 @@ def cmd_stop(args):
     print(f"Stopped '{name}'")
 
 
+def cmd_update(args):
+    name = resolve_name(args.name)
+    db = get_db()
+    row = db.execute("SELECT * FROM sessions WHERE name=?", (name,)).fetchone()
+    if not row:
+        print(f"Session '{name}' not found", file=sys.stderr)
+        sys.exit(1)
+
+    updates = []
+    params = []
+    if args.dir is not None:
+        directory = os.path.abspath(os.path.expanduser(args.dir))
+        if not os.path.isdir(directory):
+            print(f"Directory does not exist: {directory}", file=sys.stderr)
+            sys.exit(1)
+        updates.append("directory = ?")
+        params.append(directory)
+    if args.yolo is not None:
+        updates.append("yolo = ?")
+        params.append(1 if args.yolo else 0)
+    if args.no_yolo:
+        updates.append("yolo = ?")
+        params.append(0)
+    if args.model is not None:
+        updates.append("model = ?")
+        params.append(args.model)
+    if args.worktree is not None:
+        updates.append("worktree = ?")
+        params.append(1 if args.worktree else 0)
+    if args.no_worktree:
+        updates.append("worktree = ?")
+        params.append(0)
+
+    if not updates:
+        print(f"Nothing to update for '{name}'")
+        return
+
+    params.append(name)
+    db.execute(f"UPDATE sessions SET {', '.join(updates)} WHERE name = ?", params)
+    db.commit()
+    changed = ", ".join(u.split(" =")[0] for u in updates)
+    print(f"Updated '{name}': {changed}")
+
+
+def cmd_rm(args):
+    name = resolve_name(args.name)
+    db = get_db()
+    if tmux_has_session(name):
+        tmux_kill_session(name)
+    db.execute("DELETE FROM messages WHERE sender = ? OR recipient = ?", (name, name))
+    db.execute("DELETE FROM alerts WHERE session = ?", (name,))
+    db.execute("UPDATE tasks SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = ?", (name,))
+    db.execute("DELETE FROM sessions WHERE name = ?", (name,))
+    db.commit()
+    print(f"Removed '{name}'")
+
+
 def cmd_attach(args):
     name = resolve_name(args.name)
     if not tmux_has_session(name):
@@ -1475,9 +1532,23 @@ def build_parser():
     st = sub.add_parser("start", help="Start a registered session")
     st.add_argument("name", help="Session name (prefix match)")
 
+    # update
+    up = sub.add_parser("update", aliases=["set"], help="Update session settings")
+    up.add_argument("name", help="Session name (prefix match)")
+    up.add_argument("--dir", "-d", default=None, help="Change working directory")
+    up.add_argument("--yolo", action="store_true", default=None, help="Enable yolo mode")
+    up.add_argument("--no-yolo", action="store_true", default=False, help="Disable yolo mode")
+    up.add_argument("--model", "-m", default=None, help="Change model")
+    up.add_argument("--worktree", "-w", action="store_true", default=None, help="Enable worktree isolation")
+    up.add_argument("--no-worktree", action="store_true", default=False, help="Disable worktree isolation")
+
     # stop
     sp = sub.add_parser("stop", help="Stop a running session")
     sp.add_argument("name", help="Session name (prefix match)")
+
+    # rm
+    rm = sub.add_parser("rm", aliases=["remove", "del"], help="Remove a session")
+    rm.add_argument("name", help="Session name (prefix match)")
 
     # attach
     at = sub.add_parser("attach", help="Attach to a session's tmux")
@@ -1535,8 +1606,13 @@ def main():
 
     dispatch = {
         "register": cmd_register,
+        "update": cmd_update,
+        "set": cmd_update,
         "start": cmd_start,
         "stop": cmd_stop,
+        "rm": cmd_rm,
+        "remove": cmd_rm,
+        "del": cmd_rm,
         "attach": cmd_attach,
         "peek": cmd_peek,
         "send": cmd_send,
