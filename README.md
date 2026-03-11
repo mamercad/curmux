@@ -33,7 +33,7 @@ Live status cards for every registered agent. Start, stop, and peek from the bro
 
 ### Task Board
 
-SQLite-backed kanban with atomic task claiming. Agents claim work via the REST API; no duplicated effort.
+SQLite-backed kanban with atomic task claiming. Drag cards between todo, claimed, and done in the dashboard; agents claim work via the REST API.
 
 ![Board view](docs/board.svg)
 

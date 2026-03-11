@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-03-11
+
+### Added
+
+- **Kanban draggable:** Drag task cards between columns (todo / claimed / done) in the web dashboard; status updates via `PATCH /api/tasks/{id}`.
+- `PATCH /api/tasks/{id}` — body `{"status": "todo"|"claimed"|"done", "claimed_by": ""}` (optional); 400 for invalid status, 404 for unknown id.
+- `tests/api-tasks.sh` — pure API tests for task board (POST, PATCH lifecycle, 400/404). Run with `BASE_URL=http://localhost:8833 ./tests/api-tasks.sh` (or another port when `curmux serve` is running).
+
 ## [0.2.3] - 2026-03-11
 
 ### Fixed
@@ -64,7 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use `cursor-agent` binary instead of `cursor agent` (opens IDE instead of TUI)
 - Pass tmux commands as single shell string via `shlex.quote`
 
-[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/mamercad/curmux/compare/v0.2.6...v0.2.7
 [0.2.3]: https://github.com/mamercad/curmux/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/mamercad/curmux/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/mamercad/curmux/compare/v0.2.0...v0.2.1

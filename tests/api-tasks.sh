@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pure API tests for task board (GET, POST, PATCH, DELETE).
 # Requires: curmux serve (e.g. curmux serve --no-tls --port 8833)
-# Usage: BASE_URL=http://localhost:8833 ./tests/api-tasks.sh
+# Usage: BASE_URL=http://localhost:8833 ./tests/api-tasks.sh  (or e.g. 8844 if serve uses --port 8844)
 
 set -e
 BASE="${BASE_URL:-http://localhost:8833}"

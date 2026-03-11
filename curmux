@@ -902,7 +902,13 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         body = self._read_body()
         caller = (self.headers.get("X-Curmux-Session") or "").strip()
         parts = path.split("/")
-        if len(parts) == 4 and parts[1] == "api" and parts[2] == "tasks" and not path.endswith("/claim") and not path.endswith("/done"):
+        if (
+            len(parts) == 4
+            and parts[1] == "api"
+            and parts[2] == "tasks"
+            and not path.endswith("/claim")
+            and not path.endswith("/done")
+        ):
             _push_stream("PATCH", path, caller)
             return self._patch_task(parts[3], body)
         self._json({"error": "not found"}, 404)
