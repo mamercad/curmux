@@ -163,6 +163,7 @@ curmux board add --title "..." [--project PRJ]
 curmux board claim TASK-ID --agent <name>
 curmux board done TASK-ID
 curmux serve [--port 8833]    # web dashboard + watchdog
+curmux completion bash | zsh  # print shell completion script
 ```
 
 Session names support prefix matching — `curmux peek my` resolves to `myproject` if unambiguous.

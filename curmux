@@ -507,8 +507,19 @@ def _short_id():
 # ── Shell completion ──────────────────────────────────────────────────
 
 _SUBCOMMANDS = [
-    "register", "start", "stop", "update", "rm", "attach", "peek", "send",
-    "exec", "ls", "list", "board", "serve",
+    "register",
+    "start",
+    "stop",
+    "update",
+    "rm",
+    "attach",
+    "peek",
+    "send",
+    "exec",
+    "ls",
+    "list",
+    "board",
+    "serve",
 ]
 _BOARD_ACTIONS = ["add", "claim", "done", "list", "ls"]
 
@@ -537,9 +548,7 @@ def _projects_completion(prefix):
     """Return distinct project values that start with prefix. Empty list on error."""
     try:
         db = get_db()
-        rows = db.execute(
-            "SELECT DISTINCT project FROM tasks WHERE project != '' ORDER BY project"
-        ).fetchall()
+        rows = db.execute("SELECT DISTINCT project FROM tasks WHERE project != '' ORDER BY project").fetchall()
         return [r["project"] for r in rows if r["project"].startswith(prefix)]
     except Exception:
         return []
@@ -585,17 +594,24 @@ def cmd_completion(args):
         print(_ZSH_COMPLETION_SCRIPT)
 
 
-def cmd__complete(args):
-    """Internal: output completions one per line for use by completion scripts."""
+def _run__complete(argv):
+    """Parse argv (shell + rest) and output completions. Used when invoked as curmux __complete ..."""
+    if len(argv) < 1 or argv[0] not in ("bash", "zsh"):
+        return
+    shell = argv[0]
+    rest = argv[1:]
     try:
-        shell = args.shell
-        rest = getattr(args, "rest", []) or []
         if shell == "bash":
             line = rest[0] if len(rest) >= 1 else ""
             point = int(rest[1]) if len(rest) >= 2 else 0
-            words = line[:point].split()
-            current_word = words[-1] if words else ""
-            word_index = len(words) - 1
+            before = line[:point].rstrip()
+            words = before.split() if before else []
+            if not before or line[:point].endswith(" ") or (point < len(line) and line[point : point + 1].isspace()):
+                word_index = len(words)
+                current_word = ""
+            else:
+                word_index = len(words) - 1
+                current_word = words[-1] if words else ""
         else:  # zsh
             if not rest:
                 return
@@ -610,14 +626,14 @@ def cmd__complete(args):
         pass
 
 
-_BASH_COMPLETION_SCRIPT = r'''# Bash completion for curmux
+_BASH_COMPLETION_SCRIPT = r"""# Bash completion for curmux
 _curmux_complete() {
   mapfile -t COMPREPLY < <(curmux __complete bash "$COMP_LINE" $COMP_POINT 2>/dev/null)
 }
 complete -F _curmux_complete curmux
-'''
+"""
 
-_ZSH_COMPLETION_SCRIPT = r'''# Zsh completion for curmux
+_ZSH_COMPLETION_SCRIPT = r"""# Zsh completion for curmux
 _curmux() {
   local -a words; words=("${(@)words}")
   local -a reply
@@ -625,7 +641,7 @@ _curmux() {
   [[ -n $reply ]] && compadd -a reply
 }
 compdef _curmux curmux
-'''
+"""
 
 
 # ── Alerts ───────────────────────────────────────────────────────────────
@@ -2023,15 +2039,16 @@ def build_parser():
     comp = sub.add_parser("completion", help="Print shell completion script")
     comp.add_argument("shell", choices=["bash", "zsh"], help="Shell (bash or zsh)")
 
-    # __complete (internal, used by completion scripts)
-    internal = sub.add_parser("__complete", help=argparse.SUPPRESS)
-    internal.add_argument("shell", choices=["bash", "zsh"])
-    internal.add_argument("rest", nargs="*", help=argparse.SUPPRESS)
-
     return p
 
 
 def main():
+    # Handle __complete before parsing (so it doesn't appear in --help)
+    if len(sys.argv) >= 2 and sys.argv[1] == "__complete":
+        init_db()
+        _run__complete(sys.argv[2:])
+        return
+
     init_db()
     p = build_parser()
     args = p.parse_args()
@@ -2054,7 +2071,6 @@ def main():
         "board": cmd_board,
         "serve": cmd_serve,
         "completion": cmd_completion,
-        "__complete": cmd__complete,
     }
 
     if not args.command:
