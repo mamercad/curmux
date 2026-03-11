@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-03-11
+
+### Fixed
+
+- `curmux send` / web Peek send: use C-m (carriage return) so Cursor Agent TUI submits; plain Enter was sent as LF and interpreted as newline-in-input. Strip trailing newlines from send payload; preventDefault on Enter in peek input.
+
 ## [0.2.2] - 2026-03-11
 
 ### Added
@@ -58,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use `cursor-agent` binary instead of `cursor agent` (opens IDE instead of TUI)
 - Pass tmux commands as single shell string via `shlex.quote`
 
-[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/mamercad/curmux/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/mamercad/curmux/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/mamercad/curmux/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mamercad/curmux/compare/v0.1.0...v0.2.0
