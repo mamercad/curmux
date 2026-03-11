@@ -195,6 +195,16 @@ All state lives in `~/.curmux/`:
 └── logs/         # Session logs
 ```
 
+## Acknowledgments
+
+Heavily inspired by [amux](https://github.com/mixpeek/amux) — the original Claude Code multiplexer. curmux adapts the same patterns (tmux wrapping, self-healing watchdog, SQLite task board, single-file architecture) for the `cursor-agent` TUI. Props to the [Mixpeek](https://github.com/mixpeek) team for proving the pattern. 🙏
+
 ## License
 
 MIT
+
+---
+
+<p align="center">
+  Made with ❤️ and ☕ in the Great Lakes State of Michigan 🏔️🌊
+</p>
