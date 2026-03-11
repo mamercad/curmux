@@ -79,7 +79,7 @@ curmux peek frontend
 curmux send api "use bcrypt for password hashing, not argon2"
 
 # See what's been claimed
-curmux board list
+curmux board list   # or: curmux board ls
 ```
 
 ---
@@ -99,7 +99,7 @@ curmux board list
 ## Requirements
 
 - Python 3.8+
-- tmux
+- tmux (uses your existing `~/.tmux.conf` if present)
 - [Cursor Agent CLI](https://cursor.sh) (`cursor-agent`)
 
 ## Install
@@ -145,8 +145,8 @@ curmux attach <name>          # attach to tmux session (detach: Ctrl-b d)
 curmux peek <name>            # view output without attaching
 curmux send <name> <text>     # send text to a session
 curmux exec <name> --dir <path> [--yolo] -- <prompt>
-curmux ls [--format json]     # list sessions
-curmux board list             # show task board
+curmux ls | list [--format json]   # list sessions
+curmux board ls | list             # show task board
 curmux board add --title "..." [--project PRJ]
 curmux board claim TASK-ID --agent <name>
 curmux board done TASK-ID

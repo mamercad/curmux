@@ -435,6 +435,8 @@ def cmd_exec(args):
 def cmd_board(args):
     db = get_db()
     action = args.action if hasattr(args, "action") else "list"
+    if action == "ls":
+        action = "list"
 
     if action == "add":
         task_id = f"{args.project or 'TASK'}-{_short_id()}"
@@ -1368,6 +1370,8 @@ async function renderSessions() {
 
 async function renderBoard() {
   const el = document.getElementById('tab-board');
+  const prevTitle = document.getElementById('new-task-title')?.value ?? '';
+  const prevProject = document.getElementById('new-task-project')?.value ?? '';
   try {
     const r = await fetch(API+'/api/tasks');
     const tasks = await r.json();
@@ -1393,6 +1397,10 @@ async function renderBoard() {
           </div>
         `).join('')}
       </div>`;
+    const titleIn = document.getElementById('new-task-title');
+    const projectIn = document.getElementById('new-task-project');
+    if (titleIn) titleIn.value = prevTitle;
+    if (projectIn) projectIn.value = prevProject;
   } catch(e) {
     el.innerHTML = '<div class="empty">Error loading board</div>';
   }
@@ -1589,9 +1597,10 @@ def build_parser():
     ex.add_argument("--worktree", "-w", action="store_true", help="Use git worktree isolation")
     ex.add_argument("prompt", nargs="*", help="Initial prompt")
 
-    # ls
-    ls = sub.add_parser("ls", help="List sessions")
-    ls.add_argument("--format", "-f", choices=["text", "json"], default="text")
+    # ls / list
+    for name in ("ls", "list"):
+        p_ = sub.add_parser(name, help="List sessions")
+        p_.add_argument("--format", "-f", choices=["text", "json"], default="text")
 
     # board
     bd = sub.add_parser("board", help="Task board")
@@ -1606,6 +1615,7 @@ def build_parser():
     bd_done = bd_sub.add_parser("done", help="Mark a task done")
     bd_done.add_argument("task_id", help="Task ID")
     bd_sub.add_parser("list", help="List all tasks")
+    bd_sub.add_parser("ls", help="List all tasks")
 
     # serve
     sv = sub.add_parser("serve", help="Start web dashboard + watchdog")
@@ -1634,6 +1644,7 @@ def main():
         "send": cmd_send,
         "exec": cmd_exec,
         "ls": cmd_ls,
+        "list": cmd_ls,
         "board": cmd_board,
         "serve": cmd_serve,
     }

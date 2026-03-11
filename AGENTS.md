@@ -15,7 +15,7 @@ All runtime state in `~/.curmux/curmux.db` (SQLite WAL mode). Tables: `sessions`
 ## Workflow
 
 - **Lifecycle**: `register` → `update` (partial changes) → `start` → `stop` → `rm` (delete)
-- **Test changes**: `./curmux --help`, `./curmux ls`, `./curmux serve --no-tls --port 9999`
+- **Test changes**: `./curmux --help`, `./curmux ls` or `./curmux list`, `./curmux serve --no-tls --port 9999`
 - **Validate syntax**: `python3 -c "import ast; ast.parse(open('curmux').read())"`
 - **Commit after every completed task.** Don't batch unrelated changes.
 
