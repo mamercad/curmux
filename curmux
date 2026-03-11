@@ -23,7 +23,29 @@ import time
 import uuid
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.0.0-dev"  # fallback when not in git; release workflow and install.sh bake the tag
+
+
+def _script_dir():
+    try:
+        path = __file__
+    except NameError:
+        path = sys.argv[0] or "."
+    return os.path.dirname(os.path.abspath(path)) or "."
+
+
+def get_version():
+    """Version from git describe when run from repo, else VERSION constant (baked at install/release)."""
+    try:
+        for args in (["git", "describe", "--tags", "--exact-match"], ["git", "describe", "--tags"]):
+            r = subprocess.run(args, cwd=_script_dir(), capture_output=True, text=True, timeout=2)
+            if r.returncode == 0 and r.stdout:
+                return r.stdout.strip().lstrip("v")
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return VERSION
+
+
 HOME = Path.home()
 DATA_DIR = HOME / ".curmux"
 DB_PATH = DATA_DIR / "curmux.db"
@@ -355,7 +377,7 @@ def cmd_ls(args):
         out = []
         for r in rows:
             status = "running" if r["name"] in running else "stopped"
-            out.append({k: r[k] for k in r} | {"status": status})
+            out.append(dict(r) | {"status": status})
         print(json.dumps(out, indent=2))
     else:
         for r in rows:
@@ -674,7 +696,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             detected = status_info.get("last_status", "stopped") if is_running else "stopped"
             out.append(
                 {
-                    **{k: r[k] for k in r},
+                    **dict(r),
                     "running": is_running,
                     "detected_status": detected,
                 }
@@ -756,7 +778,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             params.append(status)
         q += " ORDER BY created_at"
         rows = db.execute(q, params).fetchall()
-        self._json([{k: r[k] for k in r} for r in rows])
+        self._json([dict(r) for r in rows])
 
     def _post_task(self, body):
         db = get_db()
@@ -802,7 +824,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             self._json({k: row[k] for k in row} if row else {})
         else:
             rows = db.execute("SELECT * FROM memory ORDER BY key").fetchall()
-            self._json([{k: r[k] for k in r} for r in rows])
+            self._json([dict(r) for r in rows])
 
     def _post_memory(self, body):
         db = get_db()
@@ -821,7 +843,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             rows = db.execute("SELECT * FROM messages WHERE recipient=? ORDER BY created_at", (recipient,)).fetchall()
         else:
             rows = db.execute("SELECT * FROM messages ORDER BY created_at DESC LIMIT 100").fetchall()
-        self._json([{k: r[k] for k in r} for r in rows])
+        self._json([dict(r) for r in rows])
 
     def _post_message(self, body):
         db = get_db()
@@ -837,7 +859,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
     def _get_alerts(self, limit=50):
         db = get_db()
         rows = db.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
-        self._json([{k: r[k] for k in r} for r in rows])
+        self._json([dict(r) for r in rows])
 
 
 # ── TLS ──────────────────────────────────────────────────────────────────
@@ -882,8 +904,7 @@ def ensure_tls():
 
 # ── Dashboard HTML ───────────────────────────────────────────────────────
 
-DASHBOARD_HTML = (
-    """<!DOCTYPE html>
+DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1024,9 +1045,8 @@ main { padding: 24px; overflow-y: auto; }
   font-size: 11px;
   color: var(--text-dim);
   margin-bottom: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
+  overflow-wrap: break-word;
 }
 .session-card .flags {
   display: flex;
@@ -1257,9 +1277,7 @@ main { padding: 24px; overflow-y: auto; }
   <header>
     <div style="display:flex;align-items:baseline;">
       <span class="logo">curmux</span>
-      <span class="version">v"""
-    + VERSION
-    + """</span>
+      <span class="version">v{{VERSION}}</span>
     </div>
     <div class="tabs">
       <button class="tab active" onclick="showTab('sessions')">Sessions</button>
@@ -1333,7 +1351,7 @@ async function renderSessions() {
           <span class="name">${esc(s.name)}</span>
           <span class="status-dot ${st}">${st}</span>
         </div>
-        <div class="dir">${esc(s.directory)}</div>
+        <div class="dir" title="${esc(s.directory)}">${esc(s.directory)}</div>
         ${flags.length ? '<div class="flags">'+flags.map(f=>`<span class="flag">${esc(f)}</span>`).join('')+'</div>' : ''}
         <div class="actions">
           ${s.running
@@ -1463,13 +1481,11 @@ function esc(s) {
   if (!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-
 refresh();
 setInterval(refresh, 5000);
 </script>
 </body>
-</html>"""
-)
+</html>""".replace("{{VERSION}}", get_version())
 
 
 # ── Serve command ────────────────────────────────────────────────────────
@@ -1501,7 +1517,7 @@ def cmd_serve(args):
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    print(f"\n  curmux v{VERSION}")
+    print(f"\n  curmux v{get_version()}")
     print(f"  Dashboard: {proto}://localhost:{port}")
     print(f"  API:       {proto}://localhost:{port}/api/sessions")
     print(f"  Watchdog:  active (every {WATCHDOG_INTERVAL}s)")
@@ -1517,7 +1533,7 @@ def build_parser():
     p = argparse.ArgumentParser(
         prog="curmux", description="Cursor Agent Multiplexer — run parallel cursor agent sessions"
     )
-    p.add_argument("-v", "--version", action="version", version=f"curmux {VERSION}")
+    p.add_argument("-v", "--version", action="version", version=f"curmux {get_version()}")
     sub = p.add_subparsers(dest="command")
 
     # register

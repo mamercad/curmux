@@ -57,6 +57,11 @@ jobs:
           cat /tmp/release-notes.md >> "$GITHUB_OUTPUT"
           echo "CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Bake version into release artifact
+        run: |
+          sed -i.bak "s/^VERSION = .*/VERSION = \"${{ steps.version.outputs.version }}\"  # fallback when not in git; release workflow and install.sh bake the tag/" curmux
+          rm -f curmux.bak
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

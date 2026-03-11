@@ -15,11 +15,19 @@ if [ ! -f "$SRC" ]; then
   exit 1
 fi
 
+# Bake version from git so installed copy shows correct version when run outside repo
+V="$(
+  cd "$SCRIPT_DIR"
+  git describe --tags --exact-match 2>/dev/null | sed 's/^v//' \
+  || git describe --tags 2>/dev/null | sed 's/^v//' \
+  || echo "0.0.0-dev"
+)"
+
 if [ -w "$INSTALL_DIR" ]; then
-  cp "$SRC" "${INSTALL_DIR}/curmux"
+  sed "s/^VERSION = .*/VERSION = \"$V\"  # fallback when not in git; release workflow and install.sh bake the tag/" "$SRC" > "${INSTALL_DIR}/curmux"
   chmod +x "${INSTALL_DIR}/curmux"
 else
-  sudo cp "$SRC" "${INSTALL_DIR}/curmux"
+  sed "s/^VERSION = .*/VERSION = \"$V\"  # fallback when not in git; release workflow and install.sh bake the tag/" "$SRC" | sudo tee "${INSTALL_DIR}/curmux" >/dev/null
   sudo chmod +x "${INSTALL_DIR}/curmux"
 fi
 

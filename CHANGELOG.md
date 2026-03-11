@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-03-11
+
+### Added
+
+- Version from git at runtime when run from repo; install.sh and release workflow bake version into artifact
+
+### Fixed
+
+- `IndexError` in dashboard/API when using sqlite3.Row (iterate values not keys): use `dict(r)` for row serialization
+- Session cards: show full path with wrapping instead of truncation (`word-break: break-all`)
+
 ## [0.2.1] - 2026-03-11
 
 ### Fixed
@@ -47,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use `cursor-agent` binary instead of `cursor agent` (opens IDE instead of TUI)
 - Pass tmux commands as single shell string via `shlex.quote`
 
-[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/mamercad/curmux/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/mamercad/curmux/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/mamercad/curmux/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mamercad/curmux/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mamercad/curmux/releases/tag/v0.1.0
