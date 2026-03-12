@@ -15,6 +15,7 @@ All runtime state in `~/.curmux/curmux.db` (SQLite WAL mode). Tables: `sessions`
 ## Workflow
 
 - **Lifecycle**: `register` → `update` (partial changes) → `start` → `stop` → `rm` (delete)
+- **Layout**: `curmux layout [-c CONFIG] [--dir PATH]` — create a multi-pane session from `.curmux.conf` (register + tmux layout); requires PyYAML
 - **Lists**: `curmux ls` or `curmux list` (sessions); `curmux board ls` or `curmux board list` (tasks)
 - **Test changes**: `./curmux --help`, `./curmux ls`, `./curmux serve --no-tls --port 9999`
 - **Validate syntax**: `python3 -c "import ast; ast.parse(open('curmux').read())"`
@@ -69,10 +70,10 @@ They are only set when the process is started by curmux.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/sessions` | List all sessions. Each item: `name`, `directory`, `yolo`, `model`, `worktree`, `running`, `detected_status`, plus DB fields. |
-| GET | `/api/sessions/{name}/status` | Status for one session: `name`, `status` (e.g. idle, working, waiting, exited), `running`. |
-| GET | `/api/sessions/{name}/peek?lines=200` | Recent pane output (for debugging). |
-| POST | `/api/sessions/{name}/send` | Send keys to session. Body: `{"text": "..."}`. |
+| GET | `/api/sessions` | List all sessions. Each item: `name`, `directory`, `yolo`, `model`, `worktree`, `running`, `detected_status`, plus DB fields. Layout sessions include `layout: true` and `agent_panes: [{agent_id, status}]`. |
+| GET | `/api/sessions/{name}/status` | Status for one session: `name`, `status`, `running`. Layout sessions return `layout: true` and `panes: [{pane_index, agent_id, status}]`. |
+| GET | `/api/sessions/{name}/peek?lines=200&pane=` | Recent pane output. Optional `pane` (pane index or agent_id) for layout sessions. |
+| POST | `/api/sessions/{name}/send` | Send keys to session. Body: `{"text": "..."}`. Optional `"pane": index or agent_id` for layout sessions. |
 
 ### Task board
 
@@ -132,3 +133,7 @@ When the server is running, GET /api/docs returns the full API reference. Use GE
 ### Optional seed (--seed)
 
 You can start sessions with `curmux start <name> --seed` or `curmux exec <name> --dir <path> --seed` to send a one-line prompt so the agent reads CURMUX_CONTEXT from the environment.
+
+### Layout sessions
+
+Sessions created with `curmux layout` use a `.curmux.conf` YAML file (see `docs/curmux-conf-plan.md`). They are registered like normal sessions and get the same watchdog for panes with `command: agent`. Per-pane options: `focus: true` or `focused: true` to set which pane is active when you attach (default: first pane). Multiple agent panes get distinct `CURMUX_SESSION` via `agent_id` (or derived ids) so they can claim different tasks. The dashboard shows a Layout badge and per-agent status; Peek and Send support an optional `pane` (agent_id or index).

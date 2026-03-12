@@ -162,6 +162,7 @@ curmux board ls | list             # show task board
 curmux board add --title "..." [--project PRJ]
 curmux board claim TASK-ID --agent <name>
 curmux board done TASK-ID
+curmux layout [-c .curmux.conf] [--dir PATH]   # create session from config (register + tmux layout)
 curmux serve [--port 8833]    # web dashboard + watchdog
 curmux completion bash | zsh  # print shell completion script
 ```
@@ -200,6 +201,22 @@ curmux completion zsh > ~/.zsh/completions/_curmux
 # In ~/.zshrc: fpath=(~/.zsh/completions $fpath) and compinit
 ```
 
+## Layout sessions (`.curmux.conf`)
+
+Define a multi-pane tmux session from a YAML config: editor, shell, dev server, and one or more Cursor Agent panes in a reproducible layout. Layout sessions are registered like `curmux start` and get the same watchdog (status detection and auto-restart for agent panes).
+
+**Requires PyYAML:** `pip install pyyaml`
+
+```bash
+# From a directory that has .curmux.conf (session name and panes come from config)
+curmux layout
+
+# Or specify config and session root
+curmux layout -c /path/to/.curmux.conf --dir /path/to/project
+```
+
+See `docs/curmux-conf-plan.md` for the full schema and `docs/example.curmux.conf` for an example (nvim + lazygit + agent). Per-pane options include `focus: true` (or `focused: true`) to choose which pane is active when you attach; if none is set, the first pane is focused. Layout sessions appear in `curmux ls` and the dashboard with a **Layout** badge; the dashboard Peek modal lets you choose which pane (or agent) to view and send to.
+
 ## Watchdog
 
 When `curmux serve` is running, the watchdog checks all sessions every 15 seconds:
@@ -209,6 +226,8 @@ When `curmux serve` is running, the watchdog checks all sessions every 15 second
 | Agent exited to shell prompt (yolo mode) | Auto-restarts with `cursor-agent --continue` |
 | Agent waiting for confirmation (yolo mode) | Auto-accepts after 30s |
 | Agent idle for 10+ minutes | Pushes a `stuck` alert |
+
+For **layout sessions**, the watchdog runs the same logic on each pane that runs `command: agent` in the config (per-pane status and restart).
 
 ## REST API
 

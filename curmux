@@ -82,6 +82,7 @@ def init_db():
             yolo        INTEGER DEFAULT 0,
             model       TEXT DEFAULT '',
             worktree    INTEGER DEFAULT 0,
+            config_path TEXT DEFAULT '',
             created_at  REAL DEFAULT (unixepoch()),
             started_at  REAL,
             stopped_at  REAL
@@ -126,6 +127,11 @@ def init_db():
         );
     """)
     db.commit()
+    # Migration: add config_path to sessions if missing (older DBs)
+    cols = [r[1] for r in db.execute("PRAGMA table_info(sessions)").fetchall()]
+    if "config_path" not in cols:
+        db.execute("ALTER TABLE sessions ADD COLUMN config_path TEXT DEFAULT ''")
+        db.commit()
 
 
 # ── Tmux helpers ─────────────────────────────────────────────────────────
@@ -173,6 +179,422 @@ def tmux_list():
     if r.returncode != 0:
         return []
     return [s.replace(TMUX_PREFIX, "", 1) for s in r.stdout.strip().splitlines() if s.startswith(TMUX_PREFIX)]
+
+
+def _tmux_first_window_index(name):
+    """Return the first window index of the session (respects base-index in tmux.conf)."""
+    r = subprocess.run(
+        ["tmux", "list-windows", "-t", tmux_session_name(name), "-F", "#{window_index}"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return "0"
+    return r.stdout.strip().splitlines()[0]
+
+
+def _tmux_pane_base_for_window(name, window_index):
+    """Return the minimum pane index in the given window (respects pane-base-index)."""
+    target = f"{tmux_session_name(name)}:{window_index}"
+    r = subprocess.run(
+        ["tmux", "list-panes", "-t", target, "-F", "#{pane_index}"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return 0
+    indices = [int(x) for x in r.stdout.strip().splitlines()]
+    return min(indices)
+
+
+def _tmux_target(name, pane_index=None, window_index=None, pane_base=None):
+    """Return tmux target string for session or session:window.pane. pane_index is logical (0-based creation order)."""
+    t = tmux_session_name(name)
+    if pane_index is not None:
+        win = window_index if window_index is not None else _tmux_first_window_index(name)
+        base = pane_base if pane_base is not None else _tmux_pane_base_for_window(name, win)
+        actual_pane = base + pane_index
+        t = f"{t}:{win}.{actual_pane}"
+    return t
+
+
+def tmux_capture_pane(name, lines=500, pane_index=None):
+    """Capture pane output. If pane_index is set, capture that pane; else current/first."""
+    target = _tmux_target(name, pane_index)
+    r = subprocess.run(
+        ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
+        capture_output=True,
+        text=True,
+    )
+    return r.stdout if r.returncode == 0 else ""
+
+
+def tmux_send_keys_to_pane(name, text, pane_index=None):
+    """Send keys to session (current pane) or to specific pane_index."""
+    target = _tmux_target(name, pane_index)
+    subprocess.run(["tmux", "send-keys", "-t", target, "-l", text], capture_output=True)
+    subprocess.run(["tmux", "send-keys", "-t", target, "C-m"], capture_output=True)
+
+
+# ── Layout config (.curmux.conf) ──────────────────────────────────────────
+
+
+def _parse_curmux_conf(data):
+    """Parse .curmux.conf YAML. Requires PyYAML (pip install pyyaml)."""
+    try:
+        import yaml
+        return yaml.safe_load(data) or {}
+    except ImportError:
+        raise SystemExit(
+            "curmux layout requires PyYAML. Install with: pip install pyyaml"
+        ) from None
+
+
+def _load_layout_config(path):
+    """Load and validate .curmux.conf; return (config_dict, error_message). Error is None on success."""
+    path = Path(path).resolve()
+    if not path.exists():
+        return None, f"Config not found: {path}"
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        conf = _parse_curmux_conf(raw)
+    except SystemExit:
+        raise
+    except Exception as e:
+        return None, f"Failed to parse config: {e}"
+    if not isinstance(conf, dict):
+        return None, "Invalid config: expected mapping"
+    name = conf.get("name")
+    if not name or not str(name).strip():
+        return None, "Config must have non-empty 'name'"
+    name = str(name).strip()
+    rows = conf.get("rows")
+    if not rows or not isinstance(rows, list):
+        return None, "Config must have 'rows' (list with at least one row)"
+    agent_ids = []
+    for ri, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return None, f"Row {ri} must be a mapping"
+        panes = row.get("panes")
+        if not panes or not isinstance(panes, list):
+            return None, f"Row {ri} must have 'panes' (list with at least one pane)"
+        for pi, pane in enumerate(panes):
+            if not isinstance(pane, dict):
+                return None, f"Row {ri} pane {pi} must be a mapping"
+            if pane.get("command") == "agent":
+                aid = pane.get("agent_id")
+                if aid is not None:
+                    aid = str(aid).strip()
+                    if not aid:
+                        return None, f"Row {ri} pane {pi}: agent_id must be non-empty"
+                    if aid in agent_ids:
+                        return None, f"Duplicate agent_id: {aid}"
+                    agent_ids.append(aid)
+    return conf, None
+
+
+def _build_layout_grid(conf):
+    """Build (row, col) -> pane_info grid and return (grid, creation_order). creation_order = [(r,c), ...]."""
+    rows_cfg = conf.get("rows") or []
+    if not rows_cfg:
+        return {}, []
+    # active_spans: col -> remaining rows (pane spans into that many more rows)
+    active_spans = {}
+    grid = {}  # (r, c) -> pane dict
+    num_cols = 0
+    for r, row_cfg in enumerate(rows_cfg):
+        panes = row_cfg.get("panes") or []
+        if r > 0:
+            for c in list(active_spans):
+                active_spans[c] -= 1
+                if active_spans[c] <= 0:
+                    del active_spans[c]
+        c = 0
+        for pane in panes:
+            while c in active_spans:
+                c += 1
+            grid[(r, c)] = dict(pane)
+            row_span = pane.get("row_span")
+            if isinstance(row_span, int) and row_span > 1:
+                active_spans[c] = row_span - 1
+            c += 1
+        num_cols = max(num_cols, c)
+    # Creation order: row-major so that row-span panes (e.g. right column) are created
+    # in their first row; then we split the left column vertically. Example: left
+    # column nvim+lazygit, right column Agent (row_span 2) -> create (0,0), (0,1), (1,0).
+    creation_order = []
+    for r in range(len(rows_cfg)):
+        for c in range(num_cols):
+            if (r, c) in grid:
+                creation_order.append((r, c))
+    return grid, creation_order
+
+
+def _get_layout_agent_panes(conf, name):
+    """Return [(pane_index, agent_id), ...] in creation order for agent panes. Used by watchdog and API."""
+    grid, creation_order = _build_layout_grid(conf)
+    agent_panes = []
+    derived_id = 0
+    for pane_index, (r, c) in enumerate(creation_order):
+        pane = grid[(r, c)]
+        if pane.get("command") == "agent":
+            aid = pane.get("agent_id")
+            if aid is not None:
+                aid = str(aid).strip()
+            else:
+                aid = f"{name}-{derived_id}" if len(agent_panes) > 0 else name
+                derived_id += 1
+            agent_panes.append((pane_index, aid))
+    return agent_panes
+
+
+def _resolve_layout_pane(name, pane_param):
+    """Resolve pane_param (pane index int/str or agent_id str) to (pane_index, agent_id). Returns (None, None) if not layout or not found."""
+    if pane_param is None or (isinstance(pane_param, str) and pane_param.strip() == ""):
+        return (None, None)
+    if isinstance(pane_param, int):
+        return (pane_param, None)
+    if str(pane_param).strip().isdigit():
+        return (int(pane_param), None)
+    db = get_db()
+    row = db.execute("SELECT * FROM sessions WHERE name=?", (name,)).fetchone()
+    if not row or not (row["config_path"] or "").strip():
+        return (None, None)
+    conf, err = _load_layout_config(Path(row["config_path"]))
+    if err or not conf:
+        return (None, None)
+    for pi, aid in _get_layout_agent_panes(conf, name):
+        if aid == str(pane_param).strip():
+            return (pi, aid)
+    return (None, None)
+
+
+def _agent_command_and_env(name, pane_agent_id, api_url, row):
+    """Build cursor-agent command list and env prefix for an agent pane. row = session DB row (yolo, model, worktree)."""
+    api_url = api_url or f"http://localhost:{DEFAULT_PORT}"
+    session_id = pane_agent_id or name
+    context_val = (
+        f"You're in curmux. API base: {api_url}. Your session: {session_id}. "
+        f"Full API reference: GET {api_url}/api/docs. Agents doc: GET {api_url}/api/agents"
+    )
+    env_parts = [
+        f"CURMUX_SESSION={shlex.quote(session_id)}",
+        f"CURMUX_API_URL={shlex.quote(api_url)}",
+        f"CURMUX_CONTEXT={shlex.quote(context_val)}",
+    ]
+    cmd = ["cursor-agent", "--workspace", row["directory"]]
+    if row.get("yolo"):
+        cmd.append("--yolo")
+    if row.get("model"):
+        cmd.extend(["--model", row["model"]])
+    if row.get("worktree"):
+        cmd.extend(["--worktree", name])
+    return cmd, " ".join(env_parts)
+
+
+def _run_layout(config_path, session_root, conf, api_url=None):
+    """Create tmux session from config; register in DB. Returns (session_name, error)."""
+    session_root = Path(session_root).resolve()
+    if not session_root.is_dir():
+        return None, f"Session root is not a directory: {session_root}"
+    name = (conf.get("name") or "").strip()
+    if not name:
+        return None, "Config 'name' is required"
+    if tmux_has_session(name):
+        return None, f"Session '{name}' already exists (stop it first)"
+    api_url = api_url or f"http://localhost:{DEFAULT_PORT}"
+
+    # Before hook
+    before_cmd = conf.get("before")
+    if before_cmd:
+        before_cmd = (before_cmd or "").strip()
+        if before_cmd:
+            r = subprocess.run(
+                ["sh", "-c", before_cmd],
+                cwd=session_root,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if r.returncode != 0:
+                return None, f"before hook failed (exit {r.returncode}): {r.stderr or r.stdout or ''}"
+
+    grid, creation_order = _build_layout_grid(conf)
+    if not creation_order:
+        return None, "No panes in config"
+
+    # DB row for this layout session (for agent panes we use yolo=0 by default)
+    db = get_db()
+    db.execute(
+        "INSERT OR REPLACE INTO sessions (name, directory, yolo, model, worktree, config_path) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, str(session_root), 0, "", 0, str(config_path)),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM sessions WHERE name=?", (name,)).fetchone()
+    row = dict(row)
+
+    # Collect agent panes for identity: (r,c) -> agent_id (or derived)
+    agent_panes = []  # [(pane_index, agent_id)]
+    agent_id_to_pane_index = {}
+    derived_id = 0
+    for pane_index, (r, c) in enumerate(creation_order):
+        pane = grid[(r, c)]
+        if pane.get("command") == "agent":
+            aid = pane.get("agent_id")
+            if aid is not None:
+                aid = str(aid).strip()
+            else:
+                aid = f"{name}-{derived_id}" if len(agent_panes) > 0 else name
+                derived_id += 1
+            agent_panes.append((pane_index, aid))
+
+    # First pane: new-session
+    r0, c0 = creation_order[0]
+    pane0 = grid[(r0, c0)]
+    dir0 = session_root / (pane0.get("dir") or ".")
+    dir0 = dir0.resolve() if dir0.exists() else session_root
+    cmd0 = pane0.get("command")
+    env0 = pane0.get("env") or {}
+    if cmd0 == "agent":
+        cmd_parts, env_prefix = _agent_command_and_env(name, agent_panes[0][1] if agent_panes else name, api_url, row)
+        full_cmd = f"{env_prefix} {' '.join(shlex.quote(x) for x in cmd_parts)}"
+    else:
+        full_cmd = (cmd0 or os.environ.get("SHELL", "sh"))
+        if env0:
+            full_cmd = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env0.items()) + " " + full_cmd
+    try:
+        subprocess.run(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                tmux_session_name(name),
+                "-c",
+                str(dir0),
+                full_cmd,
+            ],
+            check=True,
+            cwd=session_root,
+        )
+    except subprocess.CalledProcessError as e:
+        db.execute("DELETE FROM sessions WHERE name=?", (name,))
+        db.commit()
+        return None, f"tmux new-session failed: {e}"
+
+    win_idx = _tmux_first_window_index(name)
+    pane_base = _tmux_pane_base_for_window(name, win_idx)
+
+    # Remaining panes: split-window
+    for idx in range(1, len(creation_order)):
+        r, c = creation_order[idx]
+        pane = grid[(r, c)]
+        # Find which existing pane to split: (r-1, c) or (0, c-1)
+        if r > 0 and (r - 1, c) in grid:
+            parent_r, parent_c = r - 1, c
+            split_h = False
+        else:
+            parent_r, parent_c = 0, c - 1
+            split_h = True
+        parent_idx = creation_order.index((parent_r, parent_c))
+        target = f"{tmux_session_name(name)}:{win_idx}.{pane_base + parent_idx}"
+        dir_p = session_root / (pane.get("dir") or ".")
+        dir_p = dir_p.resolve() if dir_p.exists() else session_root
+        cmd_p = pane.get("command")
+        env_p = pane.get("env") or {}
+        if cmd_p == "agent":
+            _, env_prefix = _agent_command_and_env(
+                name,
+                next((aid for pi, aid in agent_panes if pi == idx), name),
+                api_url,
+                row,
+            )
+            cmd_str = "cursor-agent --workspace " + shlex.quote(str(session_root))
+            if row.get("yolo"):
+                cmd_str += " --yolo"
+            if row.get("model"):
+                cmd_str += " --model " + shlex.quote(row["model"])
+            full_cmd = f"{env_prefix} {cmd_str}"
+        else:
+            full_cmd = (cmd_p or os.environ.get("SHELL", "sh"))
+            if env_p:
+                full_cmd = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env_p.items()) + " " + full_cmd
+        try:
+            subprocess.run(
+                [
+                    "tmux",
+                    "split-window",
+                    "-t",
+                    target,
+                    "-h" if split_h else "-v",
+                    "-c",
+                    str(dir_p),
+                    full_cmd,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            tmux_kill_session(name)
+            db.execute("DELETE FROM sessions WHERE name=?", (name,))
+            db.commit()
+            return None, f"tmux split-window failed: {e}"
+
+    # Pane titles and focus
+    for pane_index, (r, c) in enumerate(creation_order):
+        pane = grid[(r, c)]
+        title = pane.get("title")
+        if title:
+            subprocess.run(
+                ["tmux", "select-pane", "-t", f"{tmux_session_name(name)}:{win_idx}.{pane_base + pane_index}", "-T", str(title)],
+                capture_output=True,
+            )
+    focus_pane = None
+    for r, c in creation_order:
+        p = grid.get((r, c), {})
+        if p.get("focus") or p.get("focused"):  # focused: alias for focus
+            focus_pane = creation_order.index((r, c))
+            break
+    if focus_pane is not None:
+        subprocess.run(
+            ["tmux", "select-pane", "-t", f"{tmux_session_name(name)}:{win_idx}.{pane_base + focus_pane}"],
+            capture_output=True,
+        )
+
+    # Theme (optional)
+    theme = conf.get("theme")
+    if isinstance(theme, dict):
+        for key, val in theme.items():
+            if key == "accent" and val:
+                subprocess.run(
+                    ["tmux", "set-option", "-t", tmux_session_name(name), "pane-active-border-style", f"fg={val}"],
+                    capture_output=True,
+                )
+            elif key == "border" and val:
+                subprocess.run(
+                    ["tmux", "set-option", "-t", tmux_session_name(name), "pane-border-style", f"fg={val}"],
+                    capture_output=True,
+                )
+
+    db.execute("UPDATE sessions SET started_at=? WHERE name=?", (time.time(), name))
+    db.commit()
+    _push_alert("layout", name, f"Layout session '{name}' started")
+    return name, None
+
+
+def cmd_layout(args):
+    """Create and register a session from .curmux.conf."""
+    config_path = Path(getattr(args, "config", None) or ".curmux.conf").resolve()
+    dir_path = getattr(args, "dir", None)
+    session_root = Path(dir_path).resolve() if dir_path else config_path.parent
+    conf, err = _load_layout_config(config_path)
+    if err:
+        print(err, file=sys.stderr)
+        sys.exit(1)
+    name, err = _run_layout(config_path, session_root, conf)
+    if err:
+        print(err, file=sys.stderr)
+        sys.exit(1)
+    print(f"Layout '{name}' started in {session_root}")
 
 
 # ── Status detection ─────────────────────────────────────────────────────
@@ -519,6 +941,7 @@ _SUBCOMMANDS = [
     "ls",
     "list",
     "board",
+    "layout",
     "serve",
 ]
 _BOARD_ACTIONS = ["add", "claim", "done", "list", "ls"]
@@ -670,6 +1093,73 @@ def _push_stream(method, path, caller=""):
 _session_actions = {}
 
 
+def _watchdog_tick_layout_session(row, name, now):
+    """Run watchdog logic for one layout session: each agent pane gets status detection and restart/auto-accept."""
+    config_path = (row.get("config_path") or "").strip()
+    if not config_path:
+        return
+    conf, err = _load_layout_config(Path(config_path))
+    if err or not conf:
+        return
+    agent_panes = _get_layout_agent_panes(conf, name)
+    if not agent_panes:
+        return
+    api_url = f"http://localhost:{DEFAULT_PORT}"
+    for pane_index, agent_id in agent_panes:
+        output = tmux_capture_pane(name, 200, pane_index)
+        if not output:
+            continue
+        clean = STRIP_ANSI.sub("", output)
+        key = (name, pane_index)
+        actions = _session_actions.setdefault(key, {})
+        status = _detect_status(clean)
+        actions["last_status"] = status
+        actions["last_check"] = now
+        if status != actions.get("prev_status"):
+            actions["status_changed_at"] = now
+        actions["prev_status"] = status
+
+        # 1. Agent exited → auto-restart with --continue (layout agent panes use yolo from session row)
+        if status == "exited" and row.get("yolo") and not actions.get("restarting"):
+            last_restart = actions.get("last_restart", 0)
+            if now - last_restart > 90:
+                actions["restarting"] = True
+                actions["last_restart"] = now
+                sname, srow, sagent_id, spi = name, dict(row), agent_id, pane_index
+
+                def _do_restart():
+                    time.sleep(3)
+                    cmd_parts = ["cursor-agent", "--continue", "--workspace", srow["directory"]]
+                    if srow.get("yolo"):
+                        cmd_parts.append("--yolo")
+                    if srow.get("model"):
+                        cmd_parts.extend(["--model", srow["model"]])
+                    _, env_prefix = _agent_command_and_env(sname, sagent_id, api_url, srow)
+                    full_cmd = f"{env_prefix} {' '.join(shlex.quote(x) for x in cmd_parts)}"
+                    tmux_send_keys_to_pane(sname, full_cmd, spi)
+                    _session_actions.pop((sname, spi), None)
+
+                threading.Thread(target=_do_restart, daemon=True).start()
+                _push_alert("auto_restart", name, f"Agent pane {agent_id} in '{name}' — auto-restarting")
+
+        # 2. Waiting for confirmation in yolo mode → auto-accept
+        if status == "waiting" and row.get("yolo"):
+            wait_since = actions.get("status_changed_at", now)
+            last_auto = actions.get("last_auto_accept", 0)
+            if now - wait_since > 30 and now - last_auto > 60:
+                actions["last_auto_accept"] = now
+                tmux_send_keys_to_pane(name, "y", pane_index)
+                _push_alert("auto_accept", name, f"Auto-accepted in '{name}' pane {agent_id}")
+
+        # 3. Stuck detection
+        changed_at = actions.get("status_changed_at", now)
+        if status == "idle" and now - changed_at > 600 and not actions.get("stuck_alerted"):
+            actions["stuck_alerted"] = True
+            _push_alert("stuck", name, f"Session '{name}' pane {agent_id} appears stuck (idle >10min)")
+        if status != "idle":
+            actions.pop("stuck_alerted", None)
+
+
 def watchdog_tick():
     """Single watchdog pass over all running sessions."""
     db = get_db()
@@ -681,6 +1171,12 @@ def watchdog_tick():
         if not tmux_has_session(name):
             continue
 
+        config_path = (row.get("config_path") or "").strip()
+        if config_path:
+            _watchdog_tick_layout_session(row, name, now)
+            continue
+
+        # Single-pane (non-layout) session
         output = tmux_capture(name, 200)
         if not output:
             continue
@@ -819,7 +1315,8 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             _push_stream("GET", path, caller)
             name = path.split("/")[3]
             lines = int(qs.get("lines", 200))
-            return self._get_peek(name, lines)
+            pane = qs.get("pane")
+            return self._get_peek(name, lines, pane)
         if path.startswith("/api/sessions/") and path.endswith("/status"):
             _push_stream("GET", path, caller)
             name = path.split("/")[3]
@@ -923,26 +1420,62 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         for r in rows:
             name = r["name"]
             is_running = name in running
-            status_info = _session_actions.get(name, {})
-            detected = status_info.get("last_status", "stopped") if is_running else "stopped"
-            out.append(
-                {
-                    **dict(r),
-                    "running": is_running,
-                    "detected_status": detected,
-                }
-            )
+            rdict = dict(r)
+            config_path = (rdict.get("config_path") or "").strip()
+            if config_path:
+                conf, err = _load_layout_config(Path(config_path))
+                if not err and conf:
+                    agent_panes = _get_layout_agent_panes(conf, name)
+                    rdict["layout"] = True
+                    rdict["agent_panes"] = [
+                        {
+                            "agent_id": aid,
+                            "status": _session_actions.get((name, pi), {}).get("last_status", "stopped")
+                            if is_running
+                            else "stopped",
+                        }
+                        for pi, aid in agent_panes
+                    ]
+                else:
+                    rdict["layout"] = True
+                    rdict["agent_panes"] = []
+                status_info = _session_actions.get(name, {})
+                detected = status_info.get("last_status", "stopped") if is_running else "stopped"
+            else:
+                status_info = _session_actions.get(name, {})
+                detected = status_info.get("last_status", "stopped") if is_running else "stopped"
+            out.append({**rdict, "running": is_running, "detected_status": detected})
         self._json(out)
 
-    def _get_peek(self, name, lines):
-        output = tmux_capture(name, lines)
-        self._json({"name": name, "output": output})
+    def _get_peek(self, name, lines, pane=None):
+        pane_index, agent_id = _resolve_layout_pane(name, pane) if pane is not None else (None, None)
+        if pane_index is not None:
+            output = tmux_capture_pane(name, lines, pane_index)
+            self._json({"name": name, "output": output, "pane_index": pane_index, "agent_id": agent_id})
+        else:
+            output = tmux_capture(name, lines)
+            self._json({"name": name, "output": output})
 
     def _get_session_status(self, name):
+        running = tmux_has_session(name)
+        db = get_db()
+        row = db.execute("SELECT * FROM sessions WHERE name=?", (name,)).fetchone()
+        config_path = (row["config_path"] or "").strip() if row else ""
+        if config_path and running:
+            conf, err = _load_layout_config(Path(config_path))
+            if not err and conf:
+                agent_panes = _get_layout_agent_panes(conf, name)
+                panes = []
+                for pi, aid in agent_panes:
+                    output = tmux_capture_pane(name, 50, pi)
+                    clean = STRIP_ANSI.sub("", output) if output else ""
+                    panes.append({"pane_index": pi, "agent_id": aid, "status": _detect_status(clean) if clean else "stopped"})
+                self._json({"name": name, "layout": True, "running": True, "panes": panes})
+                return
         output = tmux_capture(name, 50)
         clean = STRIP_ANSI.sub("", output) if output else ""
         status = _detect_status(clean) if clean else "stopped"
-        self._json({"name": name, "status": status, "running": tmux_has_session(name)})
+        self._json({"name": name, "status": status, "running": running})
 
     def _post_session(self, body):
         db = get_db()
@@ -985,7 +1518,12 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         text = (body.get("text", "") or "").rstrip("\n\r")
         if not text:
             return self._json({"error": "text required"}, 400)
-        tmux_send_keys(name, text)
+        pane_param = body.get("pane")
+        pane_index, _ = _resolve_layout_pane(name, pane_param)
+        if pane_index is not None:
+            tmux_send_keys_to_pane(name, text, pane_index)
+        else:
+            tmux_send_keys(name, text)
         self._json({"ok": True, "name": name})
 
     def _delete_session(self, name):
@@ -1138,10 +1676,11 @@ Environment (set when session is started by curmux):
   CURMUX_CONTEXT  Short hint: API base, session, "Full API reference: GET <url>/api/docs", "Agents doc: GET <url>/api/agents"
 
 Sessions
-  GET  /api/sessions              List all sessions (name, directory, running, detected_status, ...)
-  GET  /api/sessions/{name}/status   Status for one session (idle, working, waiting, exited)
-  GET  /api/sessions/{name}/peek?lines=200   Recent pane output
-  POST /api/sessions/{name}/send   Body: {"text": "..."}
+  GET  /api/sessions              List all sessions (name, directory, running, detected_status, ...).
+                                  Layout sessions include layout: true and agent_panes: [{agent_id, status}].
+  GET  /api/sessions/{name}/status   Status for one session. Layout sessions return layout: true, panes: [{pane_index, agent_id, status}].
+  GET  /api/sessions/{name}/peek?lines=200&pane=   Recent pane output. Optional pane= (pane index or agent_id) for layout sessions.
+  POST /api/sessions/{name}/send   Body: {"text": "...", optional "pane": index or agent_id for layout sessions}
 
 Task board (status: todo -> claimed -> done)
   GET    /api/tasks?project=&status=   List tasks
@@ -1654,6 +2193,10 @@ main { padding: 24px; overflow-y: auto; }
   <div class="modal">
     <div class="modal-header">
       <h3 id="peek-title">peek</h3>
+      <div id="peek-pane-wrap" style="display:none;margin-left:12px;">
+        <label for="peek-pane-select">Pane:</label>
+        <select id="peek-pane-select" onchange="peekPane=this.value;refreshPeek();" style="margin-left:6px;padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);"></select>
+      </div>
       <button class="modal-close" onclick="closePeek()">&times;</button>
     </div>
     <div class="modal-body">
@@ -1682,6 +2225,8 @@ var hashTab = (function(){
 if (hashTab !== 'sessions') currentTab = hashTab;
 let peekSession = null;
 let peekInterval = null;
+let peekPanes = null;
+let peekPane = '';
 
 function saveFocus(container) {
   const active = document.activeElement;
@@ -1776,15 +2321,20 @@ async function renderSessions() {
     el.innerHTML = '<div class="sessions-grid">'+sessions.map(s => {
       const st = s.running ? s.detected_status : 'stopped';
       const flags = [];
+      if (s.layout) flags.push('Layout');
       if (s.yolo) flags.push('yolo');
       if (s.model) flags.push(s.model);
       if (s.worktree) flags.push('worktree');
+      const agentStatus = s.layout && s.agent_panes && s.agent_panes.length
+        ? s.agent_panes.map(ap => `${ap.agent_id}: ${ap.status}`).join(', ')
+        : '';
       return `<div class="session-card">
         <div class="top">
           <span class="name">${esc(s.name)}</span>
           <span class="status-dot ${st}">${st}</span>
         </div>
         <div class="dir" title="${esc(s.directory)}">${esc(s.directory)}</div>
+        ${agentStatus ? `<div class="agent-panes" title="Agent panes">${esc(agentStatus)}</div>` : ''}
         ${flags.length ? '<div class="flags">'+flags.map(f=>`<span class="flag">${esc(f)}</span>`).join('')+'</div>' : ''}
         <div class="actions">
           ${s.running
@@ -1902,9 +2452,23 @@ async function stopSession(name) {
   refresh();
 }
 
-function openPeek(name) {
+async function openPeek(name) {
   peekSession = name;
+  peekPanes = null;
+  peekPane = '';
   document.getElementById('peek-title').textContent = name;
+  const wrap = document.getElementById('peek-pane-wrap');
+  const sel = document.getElementById('peek-pane-select');
+  wrap.style.display = 'none';
+  try {
+    const statusRes = await fetch(API+`/api/sessions/${encodeURIComponent(name)}/status`);
+    const status = await statusRes.json();
+    if (status.layout && status.panes && status.panes.length) {
+      peekPanes = status.panes;
+      sel.innerHTML = '<option value="">Focused</option>' + peekPanes.map(p => `<option value="${esc(p.agent_id)}">${esc(p.agent_id)} (${p.status})</option>`).join('');
+      wrap.style.display = 'block';
+    }
+  } catch (_) {}
   document.getElementById('peek-modal').classList.add('open');
   refreshPeek();
   peekInterval = setInterval(refreshPeek, 3000);
@@ -1913,11 +2477,15 @@ function closePeek() {
   document.getElementById('peek-modal').classList.remove('open');
   clearInterval(peekInterval);
   peekSession = null;
+  peekPanes = null;
+  peekPane = '';
+  document.getElementById('peek-pane-wrap').style.display = 'none';
 }
 async function refreshPeek() {
   if (!peekSession) return;
+  const paneParam = peekPane ? '&pane=' + encodeURIComponent(peekPane) : '';
   try {
-    const r = await fetch(API+`/api/sessions/${peekSession}/peek?lines=300`);
+    const r = await fetch(API+`/api/sessions/${encodeURIComponent(peekSession)}/peek?lines=300${paneParam}`);
     const d = await r.json();
     const el = document.getElementById('peek-output');
     el.textContent = d.output || '(no output)';
@@ -1927,10 +2495,12 @@ async function refreshPeek() {
 async function sendFromPeek() {
   const input = document.getElementById('peek-input');
   if (!input.value.trim() || !peekSession) return;
-  await fetch(API+`/api/sessions/${peekSession}/send`, {
+  const body = { text: input.value.trim() };
+  if (peekPane) body.pane = peekPane;
+  await fetch(API+`/api/sessions/${encodeURIComponent(peekSession)}/send`, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({text: input.value})
+    body: JSON.stringify(body)
   });
   input.value = '';
   setTimeout(refreshPeek, 500);
@@ -2122,6 +2692,14 @@ def build_parser():
     bd_sub.add_parser("list", help="List all tasks")
     bd_sub.add_parser("ls", help="List all tasks")
 
+    # layout
+    ly = sub.add_parser(
+        "layout",
+        help="Create session from .curmux.conf (register + tmux layout). Requires PyYAML (pip install pyyaml).",
+    )
+    ly.add_argument("-c", "--config", default=".curmux.conf", help="Config file path (default: .curmux.conf)")
+    ly.add_argument("--dir", "-d", help="Session root (default: directory of config file)")
+
     # serve
     sv = sub.add_parser("serve", help="Start web dashboard + watchdog")
     sv.add_argument("--port", "-p", type=int, default=DEFAULT_PORT, help=f"Port (default: {DEFAULT_PORT})")
@@ -2161,6 +2739,7 @@ def main():
         "ls": cmd_ls,
         "list": cmd_ls,
         "board": cmd_board,
+        "layout": cmd_layout,
         "serve": cmd_serve,
         "completion": cmd_completion,
     }

@@ -11,6 +11,12 @@ from pathlib import Path
 
 import pytest
 
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
 
 @pytest.fixture()
 def curmux():
@@ -287,3 +293,128 @@ class TestAlerts:
     def test_short_id_uniqueness(self, curmux):
         ids = {curmux._short_id() for _ in range(100)}
         assert len(ids) == 100
+
+
+# ── Layout config ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not HAS_YAML, reason="PyYAML required for layout tests")
+class TestLayoutConfig:
+    def test_load_valid_config(self, curmux, tmp_path):
+        config_file = tmp_path / ".curmux.conf"
+        config_file.write_text(
+            "name: myproject\nrows:\n  - panes:\n    - title: Editor\n      command: vim\n    - title: Agent\n      command: agent\n"
+        )
+        conf, err = curmux._load_layout_config(config_file)
+        assert err is None
+        assert conf["name"] == "myproject"
+        assert len(conf["rows"]) == 1
+        assert len(conf["rows"][0]["panes"]) == 2
+        assert conf["rows"][0]["panes"][1]["command"] == "agent"
+
+    def test_load_missing_name(self, curmux, tmp_path):
+        config_file = tmp_path / ".curmux.conf"
+        config_file.write_text("rows:\n  - panes:\n    - command: vim\n")
+        conf, err = curmux._load_layout_config(config_file)
+        assert conf is None
+        assert "name" in err.lower()
+
+    def test_load_missing_rows(self, curmux, tmp_path):
+        config_file = tmp_path / ".curmux.conf"
+        config_file.write_text("name: proj\n")
+        conf, err = curmux._load_layout_config(config_file)
+        assert conf is None
+        assert "rows" in err.lower()
+
+    def test_load_config_not_found(self, curmux, tmp_path):
+        conf, err = curmux._load_layout_config(tmp_path / "nonexistent.conf")
+        assert conf is None
+        assert "not found" in err.lower() or "config" in err.lower()
+
+    def test_duplicate_agent_id(self, curmux, tmp_path):
+        config_file = tmp_path / ".curmux.conf"
+        config_file.write_text(
+            "name: proj\nrows:\n  - panes:\n    - command: agent\n      agent_id: main\n    - command: agent\n      agent_id: main\n"
+        )
+        conf, err = curmux._load_layout_config(config_file)
+        assert conf is None
+        assert "duplicate" in err.lower() or "agent_id" in err.lower()
+
+    def test_build_layout_grid_simple(self, curmux):
+        conf = {
+            "name": "proj",
+            "rows": [{"panes": [{"title": "A"}, {"title": "B"}]}, {"panes": [{"title": "C"}]}],
+        }
+        grid, order = curmux._build_layout_grid(conf)
+        assert (0, 0) in grid and grid[(0, 0)].get("title") == "A"
+        assert (0, 1) in grid and grid[(0, 1)].get("title") == "B"
+        assert (1, 0) in grid and grid[(1, 0)].get("title") == "C"
+        assert len(order) == 3
+        assert (0, 0) in order and (0, 1) in order and (1, 0) in order
+
+    def test_build_layout_grid_row_span(self, curmux):
+        conf = {
+            "name": "proj",
+            "rows": [
+                {"panes": [{"title": "Left"}, {"title": "Right", "row_span": 2}]},
+                {"panes": [{"title": "Bottom"}]},
+            ],
+        }
+        grid, order = curmux._build_layout_grid(conf)
+        assert (0, 0) in grid and (0, 1) in grid and (1, 0) in grid
+        assert (1, 1) not in grid
+        assert len(order) == 3
+        assert order == [(0, 0), (0, 1), (1, 0)]  # row-major for correct row_span layout
+
+    def test_get_layout_agent_panes_single(self, curmux):
+        conf = {"rows": [{"panes": [{"command": "vim"}, {"command": "agent"}]}]}
+        panes = curmux._get_layout_agent_panes(conf, "mysession")
+        assert panes == [(1, "mysession")]
+
+    def test_get_layout_agent_panes_multiple_derived(self, curmux):
+        conf = {
+            "rows": [
+                {"panes": [{"command": "agent"}, {"command": "agent"}]},
+            ]
+        }
+        panes = curmux._get_layout_agent_panes(conf, "multi")
+        assert len(panes) == 2
+        assert panes[0][1] == "multi"
+        assert panes[1][1] == "multi-1"
+
+    def test_get_layout_agent_panes_with_agent_id(self, curmux):
+        conf = {
+            "rows": [{"panes": [{"command": "agent", "agent_id": "main"}, {"command": "agent", "agent_id": "runner"}]}],
+        }
+        panes = curmux._get_layout_agent_panes(conf, "proj")
+        assert panes == [(0, "main"), (1, "runner")]
+
+    def test_resolve_layout_pane_by_index(self, curmux, tmp_data_dir):
+        config_file = tmp_data_dir / ".curmux.conf"
+        config_file.write_text(
+            "name: res\nrows:\n  - panes:\n    - command: agent\n      agent_id: main\n"
+        )
+        curmux.get_db().execute(
+            "INSERT INTO sessions (name, directory, config_path) VALUES (?, ?, ?)",
+            ("res", str(tmp_data_dir), str(config_file)),
+        )
+        curmux.get_db().commit()
+        pi, aid = curmux._resolve_layout_pane("res", 0)
+        assert pi == 0
+        assert aid is None
+        pi, aid = curmux._resolve_layout_pane("res", "0")
+        assert pi == 0
+
+    def test_resolve_layout_pane_by_agent_id(self, curmux, tmp_data_dir):
+        config_file = tmp_data_dir / ".curmux.conf"
+        config_file.write_text(
+            "name: res\nrows:\n  - panes:\n    - command: vim\n    - command: agent\n      agent_id: main\n"
+        )
+        curmux.get_db().execute(
+            "INSERT INTO sessions (name, directory, config_path) VALUES (?, ?, ?)",
+            ("res", str(tmp_data_dir), str(config_file)),
+        )
+        curmux.get_db().commit()
+        pi, aid = curmux._resolve_layout_pane("res", "main")
+        assert pi == 1
+        assert aid == "main"
