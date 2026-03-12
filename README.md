@@ -205,7 +205,7 @@ curmux completion zsh > ~/.zsh/completions/_curmux
 
 Define a multi-pane tmux session from a YAML config: editor, shell, dev server, and one or more Cursor Agent panes in a reproducible layout. Layout sessions are registered like `curmux start` and get the same watchdog (status detection and auto-restart for agent panes).
 
-**Requires PyYAML:** `pip install pyyaml`
+**Requires PyYAML:** `pip install pyyaml`. Optional dependencies (layout: pyyaml, menubar: rumps) are declared in `pyproject.toml`.
 
 ```bash
 # From a directory that has .curmux.conf (session name and panes come from config)

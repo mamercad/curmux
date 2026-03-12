@@ -597,6 +597,125 @@ def cmd_layout(args):
     print(f"Layout '{name}' started in {session_root}")
 
 
+# ── Menubar launcher (macOS) ─────────────────────────────────────────────
+
+def _menubar_pid_path():
+    """PID file path: $XDG_RUNTIME_DIR/curmux/menubar.pid or ~/.curmux/menubar.pid."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg:
+        return Path(xdg) / "curmux" / "menubar.pid"
+    return DATA_DIR / "menubar.pid"
+
+
+def _menubar_script_path():
+    """Path to menubar rumps script. Tries: (1) menubar/ next to curmux (dev), (2) ../lib/curmux/menubar/ (install)."""
+    script_dir = Path(_script_dir())
+    dev_path = script_dir / "menubar" / "curmux_menubar.py"
+    if dev_path.exists():
+        return dev_path
+    # When installed as e.g. /usr/local/bin/curmux, menubar is in /usr/local/lib/curmux/menubar/
+    lib_path = script_dir.parent / "lib" / "curmux" / "menubar" / "curmux_menubar.py"
+    if lib_path.exists():
+        return lib_path
+    return dev_path  # so error message shows the dev path when neither exists
+
+
+def cmd_menubar(args):
+    """Dispatch menubar start | stop | status. macOS only."""
+    if sys.platform != "darwin":
+        print("curmux menubar is only supported on macOS.", file=sys.stderr)
+        sys.exit(1)
+    action = getattr(args, "menubar_action", None)
+    if action == "start":
+        cmd_menubar_start(args)
+    elif action == "stop":
+        cmd_menubar_stop(args)
+    elif action == "status":
+        cmd_menubar_status(args)
+    else:
+        # subparser not chosen
+        sys.exit(1)
+
+
+def cmd_menubar_start(args):
+    pid_path = _menubar_pid_path()
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    print("menubar already running (pid %s)" % pid, file=sys.stderr)
+                    return
+                except (OSError, ProcessLookupError):
+                    pass
+        except (ValueError, OSError):
+            pass
+        pid_path.unlink(missing_ok=True)
+
+    script = _menubar_script_path()
+    if not script.exists():
+        print("menubar script not found: %s" % script, file=sys.stderr)
+        sys.exit(1)
+
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["CURMUX_MENUBAR_PID_FILE"] = str(pid_path)
+    proc = subprocess.Popen(
+        [sys.executable, str(script)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=None,  # inherit so startup errors (e.g. missing rumps) are visible
+        start_new_session=True,
+        cwd=pid_path.parent,
+        env=env,
+    )
+    pid_path.write_text(str(proc.pid))
+    print("menubar started (pid %s)" % proc.pid)
+
+
+def cmd_menubar_stop(args):
+    pid_path = _menubar_pid_path()
+    if not pid_path.exists():
+        print("menubar not running")
+        return
+    try:
+        pid = int(pid_path.read_text().strip())
+    except (ValueError, OSError):
+        pid_path.unlink(missing_ok=True)
+        print("menubar not running")
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as e:
+        if e.errno != 3:  # ESRCH
+            print("failed to stop menubar: %s" % e, file=sys.stderr)
+            sys.exit(1)
+    pid_path.unlink(missing_ok=True)
+    print("menubar stopped")
+
+
+def cmd_menubar_status(args):
+    pid_path = _menubar_pid_path()
+    if not pid_path.exists():
+        print("stopped")
+        sys.exit(1)
+    try:
+        pid = int(pid_path.read_text().strip())
+    except (ValueError, OSError):
+        print("stopped")
+        sys.exit(1)
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        pid_path.unlink(missing_ok=True)
+        print("stopped")
+        sys.exit(1)
+    print("running (pid %s)" % pid)
+
+
 # ── Status detection ─────────────────────────────────────────────────────
 
 
@@ -2700,6 +2819,13 @@ def build_parser():
     ly.add_argument("-c", "--config", default=".curmux.conf", help="Config file path (default: .curmux.conf)")
     ly.add_argument("--dir", "-d", help="Session root (default: directory of config file)")
 
+    # menubar (macOS)
+    mb = sub.add_parser("menubar", help="Menu bar launcher (macOS): start, stop, status")
+    mb_sub = mb.add_subparsers(dest="menubar_action")
+    mb_sub.add_parser("start", help="Start the menu bar app")
+    mb_sub.add_parser("stop", help="Stop the menu bar app")
+    mb_sub.add_parser("status", help="Show whether the menu bar app is running")
+
     # serve
     sv = sub.add_parser("serve", help="Start web dashboard + watchdog")
     sv.add_argument("--port", "-p", type=int, default=DEFAULT_PORT, help=f"Port (default: {DEFAULT_PORT})")
@@ -2740,6 +2866,7 @@ def main():
         "list": cmd_ls,
         "board": cmd_board,
         "layout": cmd_layout,
+        "menubar": cmd_menubar,
         "serve": cmd_serve,
         "completion": cmd_completion,
     }
