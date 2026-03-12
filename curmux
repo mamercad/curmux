@@ -2038,6 +2038,9 @@ def build_parser():
     p.add_argument("-v", "--version", action="version", version=f"curmux {get_version()}")
     sub = p.add_subparsers(dest="command")
 
+    sub.add_parser("help", help="Show help and exit")
+    sub.add_parser("version", help="Show version and exit")
+
     # register
     reg = sub.add_parser("register", help="Register a new session")
     reg.add_argument("name", help="Session name")
@@ -2047,7 +2050,10 @@ def build_parser():
     reg.add_argument("--worktree", "-w", action="store_true", help="Use git worktree isolation")
 
     # start
-    st = sub.add_parser("start", help="Start a registered session")
+    st = sub.add_parser(
+        "start",
+        help="Start a registered session (--seed to hint agent to read CURMUX_CONTEXT)",
+    )
     st.add_argument("name", help="Session name (prefix match)")
     st.add_argument("--seed", action="store_true", help="Send one-line prompt so agent reads CURMUX_CONTEXT")
 
@@ -2084,7 +2090,10 @@ def build_parser():
     sd.add_argument("text", nargs="+", help="Text to send")
 
     # exec
-    ex = sub.add_parser("exec", help="Register + start + send in one shot")
+    ex = sub.add_parser(
+        "exec",
+        help="Register + start + send in one shot (--seed to hint agent to read CURMUX_CONTEXT)",
+    )
     ex.add_argument("name", help="Session name")
     ex.add_argument("--dir", "-d", help="Working directory (default: cwd)")
     ex.add_argument("--yolo", action="store_true", help="Run in yolo/force mode")
@@ -2158,6 +2167,12 @@ def main():
 
     if not args.command:
         p.print_help()
+        sys.exit(0)
+    if args.command == "help":
+        p.print_help()
+        sys.exit(0)
+    if args.command == "version":
+        print(f"curmux {get_version()}")
         sys.exit(0)
 
     fn = dispatch.get(args.command)
